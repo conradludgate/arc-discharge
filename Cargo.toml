@@ -1,0 +1,14 @@
+[package]
+name = "arc-discharge"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pin-project-lite = "0.2"
+futures-util = "0.3"
+
+pin-lock = { git = "https://github.com/conradludgate/pin-lock" }
+pin-queue = { git = "https://github.com/conradludgate/pin-queue" }
+arc-dyn = { git = "https://github.com/conradludgate/arc-dyn" }
