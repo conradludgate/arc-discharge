@@ -1,136 +1,130 @@
+#![feature(once_cell)]
 use arc_dyn::ThinArc;
-use futures_util::task::AtomicWaker;
+use join_handle::{FutureWithOutput, JoinHandle};
 use pin_queue::AlreadyInsertedError;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
-use std::thread;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::task::{Context, Wake, Waker};
+use std::thread::{self, Thread};
+use sync_slot_map::SyncSlotMap;
+use task::{PinQueue, PinTask, Task};
 
-// aliases
-type DynTask = Task<dyn Future<Output = ()> + Send + Sync + 'static>;
-type QueueTypes =
-    dyn pin_queue::Types<Id = pin_queue::id::Checked, Key = Key, Pointer = ThinArc<DynTask>>;
-type PinQueue = pin_queue::PinQueue<QueueTypes>;
+mod join_handle;
+mod sync_slot_map;
+mod task;
 
-// our Task type that stores the intrusive pointers and our futures
-pin_project_lite::pin_project!(
-    struct Task<F: ?Sized> {
-        // intrusive pointers
-        #[pin]
-        intrusive: pin_queue::Intrusive<QueueTypes>,
-
-        // pointer to the runtime handle
-        handle: Arc<SharedHandle>,
-
-        // who should be notified of this task completing
-        waker: AtomicWaker,
-
-        // the future for this task
-        #[pin]
-        fut: pin_lock::PinLock<F>,
-    }
-);
-
-impl DynTask {
-    fn schedule_global(
-        task: Pin<ThinArc<Self>>,
-    ) -> Result<(), AlreadyInsertedError<ThinArc<Self>>> {
-        task.handle
-            .global_queue
-            .lock()
-            .unwrap()
-            .push_back(task.clone())
-    }
-}
-
-struct JoinHandle<O>(Pin<ThinArc<Task<FutureWrapper<dyn Future<Output = O>>>>>);
-
-impl<O> Future for JoinHandle<O> {
-    type Output = O;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let task = self.0.as_ref().project_ref();
-        let mut fut = task.fut.lock();
-        if let Some(out) = fut.as_mut().project().out.take() {
-            Poll::Ready(out)
-        } else {
-            task.waker.register(cx.waker());
-            Poll::Pending
-        }
-    }
-}
-
-pin_project_lite::pin_project!(
-    struct FutureWrapper<F: ?Sized>
-    where
-        F: Future,
-    {
-        out: Option<F::Output>,
-        #[pin]
-        fut: F,
-    }
-);
-
-impl<F: Future + ?Sized> Future for FutureWrapper<F> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        match this.fut.poll(cx) {
-            Poll::Ready(x) => {
-                *this.out = Some(x);
-                Poll::Ready(())
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl<F: Future> Task<FutureWrapper<F>> {
-    fn new(handle: Arc<SharedHandle>, fut: F) -> Self {
-        Self {
-            intrusive: pin_queue::Intrusive::new(),
-            fut: pin_lock::PinLock::new(FutureWrapper { out: None, fut }),
-            handle,
-            waker: AtomicWaker::new(),
-        }
-    }
-}
-
-struct Key;
-impl pin_queue::GetIntrusive<QueueTypes> for Key {
-    fn get_intrusive(p: Pin<&DynTask>) -> Pin<&pin_queue::Intrusive<QueueTypes>> {
-        p.project_ref().intrusive
-    }
-}
-
-struct SharedHandle {
+pub struct SharedHandle {
     global_queue: Mutex<PinQueue>,
+    workers: OnceLock<Box<[Thread]>>,
+    parked_workers: SyncSlotMap,
+}
+
+impl SharedHandle {
+    pub fn new(workers: usize) -> Arc<Self> {
+        let shared = Arc::new(SharedHandle {
+            global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
+            workers: OnceLock::new(),
+            parked_workers: SyncSlotMap::new(workers),
+        });
+
+        let mut w = Vec::with_capacity(workers);
+        for i in 0..workers {
+            let exec = ExecutorHandle {
+                worker_index: i,
+                shared: shared.clone(),
+                local_queue: RefCell::new(VecDeque::with_capacity(32)),
+            };
+            let thread = thread::Builder::new()
+                .name(format!("arc-dispatch-{i}"))
+                .spawn(|| {
+                    // park until we can start
+                    while exec.shared.workers.get().is_none() {
+                        thread::park();
+                    }
+
+                    let exec = Rc::new(exec);
+                    exec.run_forever();
+                })
+                .unwrap();
+            w.push(thread.thread().clone());
+        }
+
+        shared.workers.set(w.into_boxed_slice()).unwrap();
+        shared
+    }
+
+    pub fn block_on<F: Future>(self: &Arc<Self>, f: F) -> F::Output {
+        let fake_exec = Rc::new(ExecutorHandle {
+            worker_index: usize::MAX,
+            shared: self.clone(),
+            local_queue: RefCell::new(VecDeque::with_capacity(0)),
+        });
+        if HANDLE.with(|x| x.borrow_mut().replace(fake_exec)).is_some() {
+            panic!(
+                "block on called within the context of another runtime. this is most likely a bug"
+            );
+        }
+
+        struct ThreadWaker {
+            thread: Thread,
+        }
+
+        impl Wake for ThreadWaker {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref()
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.thread.unpark()
+            }
+        }
+
+        let waker = Waker::from(Arc::new(ThreadWaker {
+            thread: std::thread::current(),
+        }));
+        let mut cx = Context::from_waker(&waker);
+        futures_util::pin_mut!(f);
+
+        loop {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                break v;
+            }
+            std::thread::park();
+        }
+    }
+}
+
+thread_local! {
+    static HANDLE: RefCell<Option<Rc<ExecutorHandle>>> = RefCell::new(None);
 }
 
 struct ExecutorHandle {
+    worker_index: usize,
     shared: Arc<SharedHandle>,
-    local_queue: RefCell<VecDeque<Pin<ThinArc<DynTask>>>>,
+    local_queue: RefCell<VecDeque<PinTask<dyn FutureWithOutput>>>,
 }
 
 impl ExecutorHandle {
-    fn spawn<F: Future + Send + Sync + 'static>(&self, f: F)
+    fn spawn<F: Future + Send + Sync + 'static>(&self, f: F) -> JoinHandle<F::Output>
     where
         F::Output: Send + Sync + 'static,
     {
-        let task = ThinArc::pin(Task::new(self.shared.clone(), f));
-        self.schedule_local(task)
+        let task = Task::new(self.shared.clone(), f);
+        let (task, join) = JoinHandle::new(task);
+
+        self.schedule_local(task.clone())
             .expect("new task cannot exist in another queue");
+
+        join
     }
 
     fn schedule_local(
         &self,
-        task: Pin<ThinArc<DynTask>>,
-    ) -> Result<(), AlreadyInsertedError<ThinArc<DynTask>>> {
+        task: PinTask<dyn FutureWithOutput>,
+    ) -> Result<(), AlreadyInsertedError<ThinArc<Task<dyn FutureWithOutput>>>> {
         let mut queue = self.local_queue.borrow_mut();
         if queue.len() < queue.capacity() {
             queue.push_back(task);
@@ -141,37 +135,38 @@ impl ExecutorHandle {
         }
     }
 
-    fn run(&self) {
+    fn run_forever(self: Rc<ExecutorHandle>) {
+        HANDLE.with(|exec| *exec.borrow_mut() = Some(self.clone()));
         loop {
-            let task = {
-                let mut queue = self.local_queue.borrow_mut();
-                queue.pop_front()
-            };
             // if no local tasks, get from the global queue
-            let task = task.or_else(|| self.shared.global_queue.lock().unwrap().pop_front());
+            let task = self.get_local_task().or_else(|| self.get_global_task());
             if let Some(task) = task {
-                let waker = Waker::from(task.clone());
-                let mut cx = Context::from_waker(&waker);
-                let mut fut = task.as_ref().project_ref().fut.lock();
-                let _ = fut.as_mut().poll(&mut cx);
+                Task::run(task);
             } else {
+                self.shared.parked_workers.push(self.worker_index);
                 thread::park();
             }
         }
     }
-}
 
-thread_local! {
-    static HANDLE: RefCell<Option<Rc<ExecutorHandle>>> = RefCell::new(None);
-}
-
-impl arc_dyn::pin_queue::ThinWake for DynTask {
-    fn wake(task: Pin<ThinArc<DynTask>>) {
-        let _ = HANDLE.with(|x| match &*x.borrow() {
-            // fast path, the current executor is part of the task's runtime
-            Some(exe) if Arc::ptr_eq(&exe.shared, &task.handle) => exe.schedule_local(task),
-            // slow path, global schedule
-            _ => DynTask::schedule_global(task),
-        });
+    fn get_local_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
+        let mut queue = self.local_queue.borrow_mut();
+        queue.pop_front()
     }
+
+    fn get_global_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
+        self.shared.global_queue.lock().unwrap().pop_front()
+    }
+}
+
+pub fn spawn<F: Future + Send + Sync + 'static>(f: F) -> JoinHandle<F::Output>
+where
+    F::Output: Send + Sync + 'static,
+{
+    HANDLE.with(|x| {
+        x.borrow()
+            .as_ref()
+            .expect("spawn called outside of the context of a runtime")
+            .spawn(f)
+    })
 }
