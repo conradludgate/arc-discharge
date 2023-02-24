@@ -1,6 +1,6 @@
 use std::{
     pin::Pin,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     task::{Context, Waker},
 };
 
@@ -12,7 +12,7 @@ use pin_queue::AlreadyInsertedError;
 use crate::{
     join_handle::{FutureWithOutput, JoinInner},
     sync_slot_map::ReadySlot,
-    SharedHandle, HANDLE,
+    MTRuntime, HANDLE,
 };
 
 // our Task type that stores the intrusive pointers and our futures
@@ -23,9 +23,10 @@ pin_project_lite::pin_project!(
         pub(crate) intrusive: pin_queue::Intrusive<QueueTypes>,
 
         // pointer to the runtime handle
-        pub(crate) handle: Arc<SharedHandle>,
+        pub(crate) handle: Arc<MTRuntime>,
 
         // who should be notified of this task completing
+        pub(crate) complete: AtomicBool,
         pub(crate) waker: AtomicWaker,
 
         // the future for this task
@@ -45,12 +46,15 @@ impl Task<dyn FutureWithOutput> {
             .push_back(task.clone())?;
 
         // if we push to the global queue, we should try wake up a worker to process it
-        if let ReadySlot::Ready(index) = task.handle.parked_workers.lock().pop() {
-            task.handle
-                .workers
-                .get()
-                .expect("runtime not initialised properly")[index]
-                .unpark();
+        // if it's already locked, then we know another worker is already being woken up.
+        if let Some(mut parked) = task.handle.parked_workers.try_lock() {
+            if let ReadySlot::Ready(index) = parked.pop() {
+                task.handle
+                    .workers
+                    .get()
+                    .expect("runtime not initialised properly")[index]
+                    .unpark();
+            }
         }
 
         Ok(())
@@ -58,11 +62,12 @@ impl Task<dyn FutureWithOutput> {
 }
 
 impl<F: Future> Task<JoinInner<F>> {
-    pub(crate) fn new(handle: Arc<SharedHandle>, fut: F) -> Self {
+    pub(crate) fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
         Self {
             intrusive: pin_queue::Intrusive::new(),
             fut: pin_lock::PinLock::new(JoinInner::new(fut)),
             handle,
+            complete: AtomicBool::new(false),
             waker: AtomicWaker::new(),
         }
     }
@@ -93,9 +98,13 @@ impl Task<dyn FutureWithOutput> {
 
         let waker = Waker::from(task.clone());
         let mut cx = Context::from_waker(&waker);
-        let mut fut = task.as_ref().project_ref().fut.lock();
-        if fut.as_mut().poll(&mut cx).is_ready() {
-            task.waker.wake()
+        // if it's locked, then it's already being polled or complete. we don't care
+        if let Some(mut fut) = task.as_ref().project_ref().fut.try_lock() {
+            if fut.as_mut().poll(&mut cx).is_ready() {
+                task.complete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                task.waker.wake()
+            }
         }
     }
 }

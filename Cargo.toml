@@ -6,8 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pin-project-lite = "0.2"
-futures-util = "0.3"
+pin-project-lite = "0.2.9"
+futures-util = "0.3.26"
+core_affinity = "0.8.0"
+mio = { version = "0.8.6", features = ["os-poll"] }
+sharded-slab = "0.1.4"
+pin-list = "0.1.0"
+arrayvec = "0.7.2"
 
 pin-lock = { git = "https://github.com/conradludgate/pin-lock" }
 pin-queue = { git = "https://github.com/conradludgate/pin-queue" }

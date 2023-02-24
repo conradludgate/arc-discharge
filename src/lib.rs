@@ -5,6 +5,7 @@ use pin_queue::AlreadyInsertedError;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Wake, Waker};
@@ -12,34 +13,74 @@ use std::thread::{self, Thread};
 use sync_slot_map::SyncSlotMap;
 use task::{PinQueue, PinTask, Task};
 
+mod bits;
+mod io;
 mod join_handle;
 mod sync_slot_map;
 mod task;
 
-pub struct SharedHandle {
+/// Multithreaded runtime
+pub struct MTRuntime {
     global_queue: Mutex<PinQueue>,
     workers: OnceLock<Box<[Thread]>>,
     parked_workers: SyncSlotMap,
 }
 
-impl SharedHandle {
-    pub fn new(workers: usize) -> Arc<Self> {
-        let shared = Arc::new(SharedHandle {
+impl MTRuntime {
+    /// Make a new multi-threaded runtime with `n` background threads
+    pub fn new(n: NonZeroUsize) -> Arc<Self> {
+        let shared = Arc::new(MTRuntime {
             global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
             workers: OnceLock::new(),
-            parked_workers: SyncSlotMap::new(workers),
+            parked_workers: SyncSlotMap::new(n.get()),
         });
 
-        let mut w = Vec::with_capacity(workers);
-        for i in 0..workers {
+        // no init step
+        let init = (0..n.get()).map(|i| (i, || {})).collect();
+        shared.init_workers(init);
+
+        shared
+    }
+
+    /// Make a new multi-threaded runtime with a thread per logical CPU, with the appropriate
+    /// CPU afinity set.
+    pub fn thread_per_core() -> Arc<Self> {
+        let cores = core_affinity::get_core_ids().unwrap();
+
+        let shared = Arc::new(MTRuntime {
+            global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
+            workers: OnceLock::new(),
+            parked_workers: SyncSlotMap::new(cores.len()),
+        });
+
+        let init = cores
+            .into_iter()
+            .map(|c| {
+                move || {
+                    core_affinity::set_for_current(c);
+                }
+            })
+            .enumerate()
+            .collect();
+        shared.init_workers(init);
+
+        shared
+    }
+
+    /// Make a new multi-threaded runtime with `n` background threads
+    fn init_workers(self: &Arc<Self>, worker_init: Vec<(usize, impl FnOnce() + Send + 'static)>) {
+        let mut workers = Vec::with_capacity(worker_init.len());
+        for (i, init) in worker_init {
             let exec = ExecutorHandle {
                 worker_index: i,
-                shared: shared.clone(),
+                shared: self.clone(),
                 local_queue: RefCell::new(VecDeque::with_capacity(32)),
             };
             let thread = thread::Builder::new()
-                .name(format!("arc-dispatch-{i}"))
+                .name(format!("arc-dispatch-worker-{i}"))
                 .spawn(|| {
+                    init();
+
                     // park until we can start
                     while exec.shared.workers.get().is_none() {
                         thread::park();
@@ -49,13 +90,13 @@ impl SharedHandle {
                     exec.run_forever();
                 })
                 .unwrap();
-            w.push(thread.thread().clone());
+            workers.push(thread.thread().clone());
         }
 
-        shared.workers.set(w.into_boxed_slice()).unwrap();
-        shared
+        self.workers.set(workers.into_boxed_slice()).unwrap();
     }
 
+    /// Block the current thread and wait for the future to complete.
     pub fn block_on<F: Future>(self: &Arc<Self>, f: F) -> F::Output {
         let fake_exec = Rc::new(ExecutorHandle {
             worker_index: usize::MAX,
@@ -92,8 +133,34 @@ impl SharedHandle {
             if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
                 break v;
             }
-            std::thread::park();
+            thread::park();
         }
+    }
+
+    /// spawn a task onto this runtime
+    pub fn spawn<F: Future + Send + Sync + 'static>(self: &Arc<Self>, f: F) -> JoinHandle<F::Output>
+    where
+        F::Output: Send + Sync + 'static,
+    {
+        let task = Task::new(self.clone(), f);
+        let (task, join) = JoinHandle::new(task);
+
+        HANDLE
+            .with(|x| {
+                if let Some(local) = x
+                    .borrow()
+                    .as_ref()
+                    .filter(|exec| Arc::ptr_eq(&exec.shared, self))
+                {
+                    local.schedule_local(task)
+                } else {
+                    let mut queue = self.global_queue.lock().unwrap();
+                    queue.push_back(task)
+                }
+            })
+            .expect("new task cannot exist in another queue");
+
+        join
     }
 }
 
@@ -103,7 +170,7 @@ thread_local! {
 
 struct ExecutorHandle {
     worker_index: usize,
-    shared: Arc<SharedHandle>,
+    shared: Arc<MTRuntime>,
     local_queue: RefCell<VecDeque<PinTask<dyn FutureWithOutput>>>,
 }
 
@@ -115,7 +182,7 @@ impl ExecutorHandle {
         let task = Task::new(self.shared.clone(), f);
         let (task, join) = JoinHandle::new(task);
 
-        self.schedule_local(task.clone())
+        self.schedule_local(task)
             .expect("new task cannot exist in another queue");
 
         join
@@ -169,4 +236,90 @@ where
             .expect("spawn called outside of the context of a runtime")
             .spawn(f)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{atomic::AtomicUsize, Arc},
+        task::Poll,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use futures_util::Future;
+
+    use crate::{spawn, MTRuntime};
+
+    #[test]
+    fn timers() {
+        let rt = MTRuntime::thread_per_core();
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let start = Instant::now();
+
+        let output = rt.block_on(async {
+            let counter1 = counter.clone();
+            let a = spawn(async move {
+                for _ in 0..10 {
+                    sleep(Duration::from_secs(1)).await;
+                    counter1.fetch_add(10, std::sync::atomic::Ordering::Relaxed);
+                }
+                42
+            });
+
+            let counter2 = counter.clone();
+            let b = spawn(async move {
+                for _ in 0..10 {
+                    sleep(Duration::from_secs(1)).await;
+                    counter2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                27
+            });
+
+            a.await + b.await
+        });
+
+        assert_eq!(output, 69);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 110);
+        assert!(
+            (start.elapsed().as_secs_f64() - 10.0).abs() < 0.1,
+            "time taken to complete is within 0.1 seconds"
+        );
+    }
+
+    async fn sleep(duration: Duration) {
+        ThreadSleeper {
+            instant: Instant::now() + duration,
+            spawned: false,
+        }
+        .await
+    }
+
+    struct ThreadSleeper {
+        instant: Instant,
+        spawned: bool,
+    }
+
+    impl Future for ThreadSleeper {
+        type Output = ();
+
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> Poll<Self::Output> {
+            if self.spawned || Instant::now() > self.instant {
+                Poll::Ready(())
+            } else {
+                self.spawned = true;
+                let instant = self.instant;
+                let waker = cx.waker().clone();
+                thread::spawn(move || {
+                    thread::sleep(instant - Instant::now());
+                    waker.wake()
+                });
+                Poll::Pending
+            }
+        }
+    }
 }

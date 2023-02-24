@@ -22,11 +22,11 @@ impl SyncSlotMap {
     pub(crate) fn push(&self, index: usize) {
         self.shared.push(index)
     }
-    pub(crate) fn lock(&self) -> SyncSlotMapLock<'_> {
-        SyncSlotMapLock {
-            exclusive: self.exclusive.lock().unwrap(),
+    pub(crate) fn try_lock(&self) -> Option<SyncSlotMapLock<'_>> {
+        Some(SyncSlotMapLock {
+            exclusive: self.exclusive.try_lock().ok()?,
             shared: &self.shared,
-        }
+        })
     }
 }
 
