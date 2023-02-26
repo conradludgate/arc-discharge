@@ -19,10 +19,11 @@ use ready::Ready;
 
 use crate::bits;
 
-mod ready;
+pub(crate) mod ready;
 mod registration;
+pub(crate) mod poll_evented;
 
-struct IODriver {
+pub struct IODriver {
     events: mio::Events,
     poll: mio::Poll,
 }
@@ -36,7 +37,7 @@ pub(crate) struct Handle {
 const WAKE_TOKEN: mio::Token = mio::Token(usize::MAX);
 
 impl IODriver {
-    fn new() -> (Self, Handle) {
+    pub(crate) fn new() -> (Self, Handle) {
         let driver = Self {
             events: mio::Events::with_capacity(1024),
             poll: mio::Poll::new().unwrap(),
@@ -50,7 +51,7 @@ impl IODriver {
         (driver, handle)
     }
 
-    fn poll_timeout(&mut self, handle: &Handle, timeout: Option<Duration>) {
+    pub(crate) fn poll_timeout(&mut self, handle: &Handle, timeout: Option<Duration>) {
         let events = &mut self.events;
 
         // Block waiting for an event to happen, peeling out how many events
@@ -68,7 +69,7 @@ impl IODriver {
                 WAKE_TOKEN => {}
                 mio::Token(index) => {
                     if let Some(waker) = handle.slab.take(index) {
-                        waker.wake(Ready::from_mio(&event))
+                        waker.wake(Ready::from_mio(event))
                     }
                 }
             }

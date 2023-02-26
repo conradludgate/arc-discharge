@@ -5,7 +5,7 @@ use std::io;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use super::{Direction, ReadyEvent, ScheduleIoSlot, ScheduledIo};
+use super::{Direction, ReadyEvent, ScheduleIoSlot};
 
 /// Associates an I/O resource with the reactor instance that drives it.
 ///

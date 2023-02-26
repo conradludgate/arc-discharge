@@ -16,6 +16,7 @@ use task::{PinQueue, PinTask, Task};
 mod bits;
 mod io;
 mod join_handle;
+pub mod net;
 mod sync_slot_map;
 mod task;
 
@@ -24,15 +25,20 @@ pub struct MTRuntime {
     global_queue: Mutex<PinQueue>,
     workers: OnceLock<Box<[Thread]>>,
     parked_workers: SyncSlotMap,
+    io_handle: Arc<io::Handle>,
+    io_driver: Mutex<io::IODriver>,
 }
 
 impl MTRuntime {
     /// Make a new multi-threaded runtime with `n` background threads
     pub fn new(n: NonZeroUsize) -> Arc<Self> {
+        let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
             global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
             workers: OnceLock::new(),
             parked_workers: SyncSlotMap::new(n.get()),
+            io_handle: Arc::new(handle),
+            io_driver: Mutex::new(driver),
         });
 
         // no init step
@@ -47,10 +53,13 @@ impl MTRuntime {
     pub fn thread_per_core() -> Arc<Self> {
         let cores = core_affinity::get_core_ids().unwrap();
 
+        let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
             global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
             workers: OnceLock::new(),
             parked_workers: SyncSlotMap::new(cores.len()),
+            io_handle: Arc::new(handle),
+            io_driver: Mutex::new(driver),
         });
 
         let init = cores
@@ -211,7 +220,11 @@ impl ExecutorHandle {
                 Task::run(task);
             } else {
                 self.shared.parked_workers.push(self.worker_index);
-                thread::park();
+                if let Ok(mut io) = self.shared.io_driver.try_lock() {
+                    io.poll_timeout(&self.shared.io_handle, None);
+                } else {
+                    thread::park();
+                }
             }
         }
     }
