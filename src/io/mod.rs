@@ -19,9 +19,9 @@ use ready::Ready;
 
 use crate::bits;
 
+pub(crate) mod poll_evented;
 pub(crate) mod ready;
 mod registration;
-pub(crate) mod poll_evented;
 
 pub struct IODriver {
     events: mio::Events,

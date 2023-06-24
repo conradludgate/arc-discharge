@@ -1,4 +1,3 @@
-#![feature(once_cell)]
 use arc_dyn::ThinArc;
 use join_handle::{FutureWithOutput, JoinHandle};
 use pin_queue::AlreadyInsertedError;
