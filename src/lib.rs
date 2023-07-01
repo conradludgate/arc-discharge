@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Wake, Waker};
 use std::thread::{self, Thread};
 use sync_slot_map::SyncSlotMap;
@@ -22,10 +22,18 @@ mod task;
 /// Multithreaded runtime
 pub struct MTRuntime {
     global_queue: Mutex<PinQueue>,
-    workers: OnceLock<Box<[Thread]>>,
+    workers: OnceLock<Box<[Worker]>>,
     parked_workers: SyncSlotMap,
     io_handle: Arc<io::Handle>,
     io_driver: Mutex<io::IODriver>,
+}
+
+#[derive(Debug)]
+pub struct Worker {
+    #[allow(dead_code)]
+    thread: Thread,
+    parker: Mutex<Option<WorkerThreadWaker>>,
+    unparker: Condvar,
 }
 
 impl MTRuntime {
@@ -50,7 +58,7 @@ impl MTRuntime {
     /// Make a new multi-threaded runtime with a thread per logical CPU, with the appropriate
     /// CPU afinity set.
     pub fn thread_per_core() -> Arc<Self> {
-        let cores = core_affinity::get_core_ids().unwrap();
+        let mut cores = core_affinity::get_core_ids().unwrap();
 
         let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
@@ -98,7 +106,13 @@ impl MTRuntime {
                     exec.run_forever();
                 })
                 .unwrap();
-            workers.push(thread.thread().clone());
+            workers.push({
+                Worker {
+                    thread: thread.thread().clone(),
+                    parker: Mutex::new(None),
+                    unparker: Condvar::new(),
+                }
+            });
         }
 
         self.workers.set(workers.into_boxed_slice()).unwrap();
@@ -211,6 +225,8 @@ impl ExecutorHandle {
     }
 
     fn run_forever(self: Rc<ExecutorHandle>) {
+        let workers = self.shared.workers.get().unwrap();
+        let worker = &workers[self.worker_index];
         HANDLE.with(|exec| *exec.borrow_mut() = Some(self.clone()));
         loop {
             // if no local tasks, get from the global queue
@@ -218,11 +234,15 @@ impl ExecutorHandle {
             if let Some(task) = task {
                 Task::run(task);
             } else {
+                let mut parking = worker.parker.lock().unwrap();
                 self.shared.parked_workers.push(self.worker_index);
                 if let Ok(mut io) = self.shared.io_driver.try_lock() {
+                    *parking = Some(WorkerThreadWaker::IO);
+                    drop(parking);
                     io.poll_timeout(&self.shared.io_handle, None);
                 } else {
-                    thread::park();
+                    *parking = Some(WorkerThreadWaker::Parked);
+                    drop(worker.unparker.wait(parking).unwrap());
                 }
             }
         }
@@ -236,6 +256,12 @@ impl ExecutorHandle {
     fn get_global_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
         self.shared.global_queue.lock().unwrap().pop_front()
     }
+}
+
+#[derive(Debug)]
+enum WorkerThreadWaker {
+    Parked,
+    IO,
 }
 
 pub fn spawn<F: Future + Send + Sync + 'static>(f: F) -> JoinHandle<F::Output>

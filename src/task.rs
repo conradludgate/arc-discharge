@@ -12,7 +12,7 @@ use pin_queue::AlreadyInsertedError;
 use crate::{
     join_handle::{FutureWithOutput, JoinInner},
     sync_slot_map::ReadySlot,
-    MTRuntime, HANDLE,
+    MTRuntime, WorkerThreadWaker, HANDLE,
 };
 
 // our Task type that stores the intrusive pointers and our futures
@@ -49,11 +49,25 @@ impl Task<dyn FutureWithOutput> {
         // if it's already locked, then we know another worker is already being woken up.
         if let Some(mut parked) = task.handle.parked_workers.try_lock() {
             if let ReadySlot::Ready(index) = parked.pop() {
-                task.handle
+                let worker = &task
+                    .handle
                     .workers
                     .get()
-                    .expect("runtime not initialised properly")[index]
-                    .unpark();
+                    .expect("runtime not initialised properly")[index];
+
+                let mut x = worker.parker.lock().unwrap();
+                match *x {
+                    Some(WorkerThreadWaker::Parked) => {
+                        *x = None;
+                        worker.unparker.notify_one();
+                    }
+                    Some(WorkerThreadWaker::IO) => {
+                        *x = None;
+                        task.handle.io_handle.wake()
+                    }
+                    // already woken
+                    None => {}
+                }
             }
         }
 
@@ -84,18 +98,6 @@ impl Task<dyn FutureWithOutput> {
     }
 
     pub(crate) fn run(task: PinTask<dyn FutureWithOutput>) {
-        // impl ThinWake so our task can be used as a waker
-        impl arc_dyn::pin_queue::ThinWake for Task<dyn FutureWithOutput> {
-            fn wake(task: PinTask<dyn FutureWithOutput>) {
-                let _ = HANDLE.with(|x| match &*x.borrow() {
-                    // fast path, the current executor is part of the task's runtime
-                    Some(exe) if Arc::ptr_eq(&exe.shared, &task.handle) => exe.schedule_local(task),
-                    // slow path, global schedule
-                    _ => Self::schedule_global(task),
-                });
-            }
-        }
-
         let waker = Waker::from(task.clone());
         let mut cx = Context::from_waker(&waker);
         // if it's locked, then it's already being polled or complete. we don't care
@@ -124,5 +126,17 @@ impl pin_queue::GetIntrusive<QueueTypes> for Key {
         p: Pin<&Task<dyn FutureWithOutput>>,
     ) -> Pin<&pin_queue::Intrusive<QueueTypes>> {
         p.project_ref().intrusive
+    }
+}
+
+// impl ThinWake so our task can be used as a waker
+impl arc_dyn::pin_queue::ThinWake for Task<dyn FutureWithOutput> {
+    fn wake(task: PinTask<dyn FutureWithOutput>) {
+        let _ = HANDLE.with(|x| match &*x.borrow() {
+            // fast path, the current executor is part of the task's runtime
+            Some(exe) if Arc::ptr_eq(&exe.shared, &task.handle) => exe.schedule_local(task),
+            // slow path, global schedule
+            _ => Self::schedule_global(task),
+        });
     }
 }

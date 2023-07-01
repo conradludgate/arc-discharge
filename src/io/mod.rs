@@ -161,6 +161,10 @@ impl Handle {
 
         Ok(())
     }
+
+    pub(super) fn wake(&self) {
+        self.waker.wake().unwrap()
+    }
 }
 
 type IORegisterTypes = dyn pin_list::Types<
