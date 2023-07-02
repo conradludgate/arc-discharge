@@ -58,7 +58,7 @@ impl MTRuntime {
     /// Make a new multi-threaded runtime with a thread per logical CPU, with the appropriate
     /// CPU afinity set.
     pub fn thread_per_core() -> Arc<Self> {
-        let mut cores = core_affinity::get_core_ids().unwrap();
+        let cores = core_affinity::get_core_ids().unwrap();
 
         let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
@@ -219,8 +219,7 @@ impl ExecutorHandle {
             queue.push_back(task);
             Ok(())
         } else {
-            let mut queue = self.shared.global_queue.lock().unwrap();
-            queue.push_back(task)
+            Task::schedule_global(task)
         }
     }
 

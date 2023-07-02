@@ -26,6 +26,7 @@ mod registration;
 pub struct IODriver {
     events: mio::Events,
     poll: mio::Poll,
+    tick: u8,
 }
 
 pub(crate) struct Handle {
@@ -41,6 +42,7 @@ impl IODriver {
         let driver = Self {
             events: mio::Events::with_capacity(1024),
             poll: mio::Poll::new().unwrap(),
+            tick: 0,
         };
         let registry = driver.poll.registry();
         let handle = Handle {
@@ -53,6 +55,8 @@ impl IODriver {
 
     pub(crate) fn poll_timeout(&mut self, handle: &Handle, timeout: Option<Duration>) {
         let events = &mut self.events;
+
+        self.tick = self.tick.wrapping_add(1);
 
         // Block waiting for an event to happen, peeling out how many events
         // happened.
@@ -68,8 +72,10 @@ impl IODriver {
             match token {
                 WAKE_TOKEN => {}
                 mio::Token(index) => {
-                    if let Some(waker) = handle.slab.take(index) {
-                        waker.wake(Ready::from_mio(event))
+                    if let Some(waker) = handle.slab.get(index) {
+                        let ready = Ready::from_mio(event);
+                        waker.set_readiness(Tick::Set(self.tick), |curr| curr | ready);
+                        waker.wake(ready)
                     }
                 }
             }
@@ -328,8 +334,7 @@ impl ScheduledIo {
         // states. Closed states are excluded because they are final states.
         let mask_no_closed = event.ready - Ready::READ_CLOSED - Ready::WRITE_CLOSED;
 
-        // result isn't important
-        let _ = self.set_readiness(None, Tick::Clear(event.tick), |curr| curr - mask_no_closed);
+        self.set_readiness(Tick::Clear(event.tick), |curr| curr - mask_no_closed);
     }
 
     /// Sets the readiness on this `ScheduledIo` by invoking the given closure on
@@ -348,24 +353,11 @@ impl ScheduledIo {
     /// generation, then the corresponding IO resource has been removed and
     /// replaced with a new resource. In that case, this method returns `Err`.
     /// Otherwise, this returns the previous readiness.
-    fn set_readiness(
-        &self,
-        token: Option<usize>,
-        tick: Tick,
-        f: impl Fn(Ready) -> Ready,
-    ) -> Result<(), ()> {
+    fn set_readiness(&self, tick: Tick, f: impl Fn(Ready) -> Ready) {
         let mut current = self.readiness.load(Acquire);
 
         loop {
             let current_generation = GENERATION.unpack(current);
-
-            if let Some(token) = token {
-                // Check that the generation for this access is still the
-                // current one.
-                if GENERATION.unpack(token) != current_generation {
-                    return Err(());
-                }
-            }
 
             // Mask out the tick/generation bits so that the modifying
             // function doesn't see them.
@@ -377,7 +369,7 @@ impl ScheduledIo {
                 Tick::Clear(t) => {
                     if TICK.unpack(current) as u8 != t {
                         // Trying to clear readiness with an old event!
-                        return Err(());
+                        return;
                     }
 
                     TICK.pack(t as usize, new.as_usize())
@@ -390,7 +382,7 @@ impl ScheduledIo {
                 .readiness
                 .compare_exchange(current, next, AcqRel, Acquire)
             {
-                Ok(_) => return Ok(()),
+                Ok(_) => return,
                 // we lost the race, retry!
                 Err(actual) => current = actual,
             }
@@ -427,14 +419,8 @@ impl ScheduledIo {
             // Avoid cloning the waker if one is already stored that matches the
             // current task.
             match slot {
-                Some(existing) => {
-                    if !existing.will_wake(cx.waker()) {
-                        *existing = cx.waker().clone();
-                    }
-                }
-                None => {
-                    *slot = Some(cx.waker().clone());
-                }
+                Some(existing) if existing.will_wake(cx.waker()) => {}
+                _ => *slot = Some(cx.waker().clone()),
             }
 
             // Try again, in case the readiness was changed while we were
@@ -541,7 +527,7 @@ impl Future for Readiness<'_> {
 
                     let mut waiters = this.scheduled_io.waiters.lock().unwrap();
 
-                    if let Some(init) = this.waiter.initialized() {
+                    if let Some(init) = this.waiter.as_mut().initialized_mut() {
                         if let Some(waker) = init.protected_mut(&mut waiters.list) {
                             // Update the waker, if necessary.
                             if !waker.will_wake(cx.waker()) {
@@ -550,6 +536,8 @@ impl Future for Readiness<'_> {
 
                             return Poll::Pending;
                         }
+                        init.take_removed(&waiters.list)
+                            .expect("this should be in the list but unprotected");
                     }
 
                     // Our waker has been notified.
