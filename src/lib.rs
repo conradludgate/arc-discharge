@@ -116,6 +116,10 @@ impl MTRuntime {
         }
 
         self.workers.set(workers.into_boxed_slice()).unwrap();
+
+        for i in &**self.workers.get().unwrap() {
+            i.thread.unpark();
+        }
     }
 
     /// Block the current thread and wait for the future to complete.
@@ -176,8 +180,7 @@ impl MTRuntime {
                 {
                     local.schedule_local(task)
                 } else {
-                    let mut queue = self.global_queue.lock().unwrap();
-                    queue.push_back(task)
+                    Task::schedule_global(task)
                 }
             })
             .expect("new task cannot exist in another queue");
@@ -227,21 +230,33 @@ impl ExecutorHandle {
         let workers = self.shared.workers.get().unwrap();
         let worker = &workers[self.worker_index];
         HANDLE.with(|exec| *exec.borrow_mut() = Some(self.clone()));
+        let mut counter = 0_usize;
         loop {
-            // if no local tasks, get from the global queue
-            let task = self.get_local_task().or_else(|| self.get_global_task());
+            counter = counter.wrapping_add(1);
+            let task = if counter % 31 == 0 {
+                if self.local_queue.borrow().len() < 16 {
+                    self.get_many_global_tasks()
+                } else {
+                    self.get_global_task().or_else(|| self.get_local_task())
+                }
+            } else {
+                self.get_local_task()
+                    .or_else(|| self.get_many_global_tasks())
+            };
             if let Some(task) = task {
                 Task::run(task);
             } else {
                 let mut parking = worker.parker.lock().unwrap();
-                self.shared.parked_workers.push(self.worker_index);
+                if parking.is_none() {
+                    self.shared.parked_workers.push(self.worker_index);
+                }
                 if let Ok(mut io) = self.shared.io_driver.try_lock() {
                     *parking = Some(WorkerThreadWaker::IO);
                     drop(parking);
                     io.poll_timeout(&self.shared.io_handle, None);
                 } else {
                     *parking = Some(WorkerThreadWaker::Parked);
-                    drop(worker.unparker.wait(parking).unwrap());
+                    *worker.unparker.wait(parking).unwrap() = None;
                 }
             }
         }
@@ -254,6 +269,17 @@ impl ExecutorHandle {
 
     fn get_global_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
         self.shared.global_queue.lock().unwrap().pop_front()
+    }
+
+    fn get_many_global_tasks(&self) -> Option<PinTask<dyn FutureWithOutput>> {
+        let mut global = self.shared.global_queue.lock().unwrap();
+        let mut queue = self.local_queue.borrow_mut();
+        for _ in 0..8 {
+            if let Some(next) = global.pop_front() {
+                queue.push_front(next);
+            }
+        }
+        queue.pop_front()
     }
 }
 

@@ -63,7 +63,7 @@ impl Task<dyn FutureWithOutput> {
                     }
                     Some(WorkerThreadWaker::IO) => {
                         *x = None;
-                        task.handle.io_handle.wake()
+                        task.handle.io_handle.wake();
                     }
                     // already woken
                     None => {}

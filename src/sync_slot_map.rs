@@ -22,6 +22,7 @@ impl SyncSlotMap {
     pub(crate) fn push(&self, index: usize) {
         self.shared.push(index)
     }
+
     pub(crate) fn try_lock(&self) -> Option<SyncSlotMapLock<'_>> {
         Some(SyncSlotMapLock {
             exclusive: self.exclusive.try_lock().ok()?,
@@ -52,6 +53,7 @@ impl SyncSlotMapShared {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum ReadySlot<T> {
     Ready(T),
     Inconsistent,
@@ -96,5 +98,33 @@ impl SyncSlotMapLock<'_> {
         }
 
         ReadySlot::Inconsistent
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReadySlot, SyncSlotMap};
+
+    #[test]
+    fn push_pop() {
+        let map = SyncSlotMap::new(16);
+
+        for i in 0..16 {
+            map.push(i);
+        }
+
+        let mut locked = map.try_lock().unwrap();
+        for i in 0..8 {
+            assert!(matches!(locked.pop(), ReadySlot::Ready(j) if i == j));
+        }
+
+        map.push(0);
+
+        for i in 8..16 {
+            assert!(matches!(locked.pop(), ReadySlot::Ready(j) if i == j));
+        }
+
+        assert!(matches!(locked.pop(), ReadySlot::Ready(0)));
+        assert!(matches!(locked.pop(), ReadySlot::None));
     }
 }
