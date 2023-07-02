@@ -14,88 +14,106 @@ Using [oha](https://github.com/hatoo/oha) to load test a [demo HTTP app](https:/
 
 #### tokio
 
+<details><summary>Requests/sec: 154639.7143</summary>
+
 ```
 Summary:
-  Success rate:	100.00%
-  Total:	6.4372 secs
-  Slowest:	0.0068 secs
-  Fastest:	0.0000 secs
-  Average:	0.0008 secs
-  Requests/sec:	155347.0222
+  Success rate: 100.00%
+  Total:        64.6664 secs
+  Slowest:      0.1320 secs
+  Fastest:      0.0000 secs
+  Average:      0.0012 secs
+  Requests/sec: 154639.7143
 
-  Total data:	25.75 MiB
-  Size/request:	27 B
-  Size/sec:	4.00 MiB
+  Total data:   257.49 MiB
+  Size/request: 27 B
+  Size/sec:	    3.98 MiB
 
 Response time histogram:
-  0.000 [1]      |
-  0.001 [310032] |■■■■■■■■■■■■■■
-  0.001 [677040] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.002 [11492]  |
-  0.003 [911]    |
-  0.003 [267]    |
-  0.004 [70]     |
-  0.005 [58]     |
-  0.005 [11]     |
-  0.006 [27]     |
-  0.007 [91]     |
+  0.000 [1]       |
+  0.013 [9999909] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.026 [0]       |
+  0.040 [0]       |
+  0.053 [0]       |
+  0.066 [6]       |
+  0.079 [4]       |
+  0.092 [11]      |
+  0.106 [5]       |
+  0.119 [0]       |
+  0.132 [1]       |
 
 Response time distribution:
-  10% in 0.0006 secs
-  25% in 0.0007 secs
-  50% in 0.0008 secs
-  75% in 0.0009 secs
-  90% in 0.0011 secs
-  95% in 0.0012 secs
-  99% in 0.0014 secs
+  10% in 0.0009 secs
+  25% in 0.0011 secs
+  50% in 0.0012 secs
+  75% in 0.0014 secs
+  90% in 0.0016 secs
+  95% in 0.0019 secs
+  99% in 0.0023 secs
+
+Status code distribution:
+  [200] 9999937 responses
+
+Error distribution:
+  [63] connection error: Connection reset by peer (os error 54)
 ```
+</details>
 
 #### arc-discharge
 
+<details><summary>Requests/sec:	149558.2923</summary>
+
 ```
 Summary:
-  Success rate:	100.00%
-  Total:	6.1834 secs
-  Slowest:	0.0062 secs
-  Fastest:	0.0000 secs
-  Average:	0.0008 secs
-  Requests/sec:	161722.0705
+  Success rate: 100.00%
+  Total:        66.8636 secs
+  Slowest:      0.1409 secs
+  Fastest:      0.0000 secs
+  Average:      0.0013 secs
+  Requests/sec: 149558.2923
 
-  Total data:	25.75 MiB
-  Size/request:	27 B
-  Size/sec:	4.16 MiB
+  Total data:   257.49 MiB
+  Size/request: 27 B
+  Size/sec:     3.85 MiB
 
 Response time histogram:
-  0.000 [1]      |
-  0.001 [320076] |■■■■■■■■■■■■■■■■
-  0.001 [628038] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.002 [49366]  |■■
-  0.003 [1837]   |
-  0.003 [554]    |
-  0.004 [0]      |
-  0.004 [0]      |
-  0.005 [0]      |
-  0.006 [15]     |
-  0.006 [113]    |
+  0.000 [1]       |
+  0.014 [9999927] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.028 [0]       |
+  0.042 [0]       |
+  0.056 [0]       |
+  0.070 [4]       |
+  0.085 [3]       |
+  0.099 [1]       |
+  0.113 [1]       |
+  0.127 [0]       |
+  0.141 [1]       |
 
 Response time distribution:
-  10% in 0.0005 secs
-  25% in 0.0006 secs
-  50% in 0.0007 secs
-  75% in 0.0009 secs
-  90% in 0.0011 secs
-  95% in 0.0013 secs
-  99% in 0.0016 secs
+  10% in 0.0009 secs
+  25% in 0.0010 secs
+  50% in 0.0012 secs
+  75% in 0.0015 secs
+  90% in 0.0019 secs
+  95% in 0.0021 secs
+  99% in 0.0024 secs
+
+Status code distribution:
+  [200] 9999938 responses
+
+Error distribution:
+  [62] connection error: Connection reset by peer (os error 54)
 ```
+</details>
 
 #### Results
 
-arc-discharge has a 4% throughput advantage.
+tokio has a 3.4% throughput advantage.
 
 ### Code complexity
 
-Using [tokei](https://github.com/XAMPPRocky/tokei), we measure the lines of code of each project, using `ripgrep`, we search for uses of unsafe
-inside the source and vendored dependencies
+Using [tokei](https://github.com/XAMPPRocky/tokei), we measure the lines of code of each project.
+Using `ripgrep`, we search for uses of unsafe inside the source and vendored dependencies (excluding windows-api/libc)
 
 #### tokio
 
@@ -111,9 +129,9 @@ inside the source and vendored dependencies
 ===============================================================================
 
 # unsafe
-3133 matches
-3067 matched lines
-474 files contained matches
+10041 matches
+9863 matched lines
+1052 files contained matches
 ```
 
 #### arc-discharge
@@ -130,9 +148,9 @@ inside the source and vendored dependencies
 ===============================================================================
 
 # unsafe
-10041 matches
-9863 matched lines
-1052 files contained matches
+3133 matches
+3067 matched lines
+474 files contained matches
 ```
 
 #### Results
