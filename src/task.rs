@@ -48,25 +48,28 @@ impl Task<dyn FutureWithOutput> {
         // if we push to the global queue, we should try wake up a worker to process it
         // if it's already locked, then we know another worker is already being woken up.
         if let Some(mut parked) = task.handle.parked_workers.try_lock() {
-            if let ReadySlot::Ready(index) = parked.pop() {
-                let worker = &task
-                    .handle
-                    .workers
-                    .get()
-                    .expect("runtime not initialised properly")[index];
+            loop {
+                if let ReadySlot::Ready(index) = parked.pop() {
+                    let worker = &task
+                        .handle
+                        .workers
+                        .get()
+                        .expect("runtime not initialised properly")[index];
 
-                let mut x = worker.parker.lock().unwrap();
-                match *x {
-                    Some(WorkerThreadWaker::Parked) => {
-                        *x = None;
-                        worker.unparker.notify_one();
+                    let mut x = worker.parker.lock().unwrap();
+                    match *x {
+                        Some(WorkerThreadWaker::Parked) => {
+                            *x = None;
+                            worker.unparker.notify_one();
+                            break;
+                        }
+                        None => {
+                            continue;
+                        }
                     }
-                    Some(WorkerThreadWaker::IO) => {
-                        *x = None;
-                        task.handle.io_handle.wake();
-                    }
-                    // already woken
-                    None => {}
+                } else {
+                    task.handle.io_handle.wake();
+                    break;
                 }
             }
         }

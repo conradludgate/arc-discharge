@@ -9,7 +9,6 @@ use std::net::{Shutdown, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::BufMut;
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::ready;
 use mio::Interest;
@@ -476,83 +475,6 @@ impl TcpStream {
         self.io
             .registration()
             .try_io(Interest::READABLE, || (&*self.io).read_vectored(bufs))
-    }
-
-    /// Tries to read data from the stream into the provided buffer, advancing the
-    /// buffer's internal cursor, returning how many bytes were read.
-    ///
-    /// Receives any pending data from the socket but does not wait for new data
-    /// to arrive. On success, returns the number of bytes read. Because
-    /// `try_read_buf()` is non-blocking, the buffer does not have to be stored by
-    /// the async task and can exist entirely on the stack.
-    ///
-    /// Usually, [`readable()`] or [`ready()`] is used with this function.
-    ///
-    /// [`readable()`]: TcpStream::readable()
-    /// [`ready()`]: TcpStream::ready()
-    ///
-    /// # Return
-    ///
-    /// If data is successfully read, `Ok(n)` is returned, where `n` is the
-    /// number of bytes read. `Ok(0)` indicates the stream's read half is closed
-    /// and will no longer yield data. If the stream is not ready to read data
-    /// `Err(io::ErrorKind::WouldBlock)` is returned.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use tokio::net::TcpStream;
-    /// use std::error::Error;
-    /// use std::io;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
-    ///
-    ///     loop {
-    ///         // Wait for the socket to be readable
-    ///         stream.readable().await?;
-    ///
-    ///         let mut buf = Vec::with_capacity(4096);
-    ///
-    ///         // Try to read data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match stream.try_read_buf(&mut buf) {
-    ///             Ok(0) => break,
-    ///             Ok(n) => {
-    ///                 println!("read {} bytes", n);
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e.into());
-    ///             }
-    ///         }
-    ///     }
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub fn try_read_buf<B: BufMut>(&self, buf: &mut B) -> io::Result<usize> {
-        self.io.registration().try_io(Interest::READABLE, || {
-            use std::io::Read;
-
-            let dst = buf.chunk_mut();
-            let dst =
-                unsafe { &mut *(dst as *mut _ as *mut [std::mem::MaybeUninit<u8>] as *mut [u8]) };
-
-            // Safety: We trust `TcpStream::read` to have filled up `n` bytes in the
-            // buffer.
-            let n = (&*self.io).read(dst)?;
-
-            unsafe {
-                buf.advance_mut(n);
-            }
-
-            Ok(n)
-        })
     }
 
     /// Polls for write readiness.

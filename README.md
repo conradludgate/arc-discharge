@@ -6,6 +6,12 @@ This is intended to be an efficient async runtime with readable code and only a 
 It does depend on some libraries with lots of unsafe and unstable features. But the concepts of those libraries
 are abstracted away from the concept of the runtime.
 
+## Disclaimer
+
+This requires nightly APIs, is not well tested, and not recommended for production use. It is not meant to replace tokio.
+The main purpose is to have similar performance characteristics to tokio with a much simpler code base for learning purposes.
+It is not ensured to be satisfactory for soft real time systems.
+
 ## Benchmarks
 
 ### HTTP
@@ -113,7 +119,7 @@ tokio has a 3.4% throughput advantage.
 ### Code complexity
 
 Using [tokei](https://github.com/XAMPPRocky/tokei), we measure the lines of code of each project.
-Using `ripgrep`, we search for uses of unsafe inside the source and vendored dependencies (excluding windows-api/libc)
+Using `ripgrep`, we search for uses of unsafe inside the source and vendored dependencies (excluding windows-api/libc and dev dependencies)
 
 #### tokio
 
@@ -129,9 +135,9 @@ Using `ripgrep`, we search for uses of unsafe inside the source and vendored dep
 ===============================================================================
 
 # unsafe
-10041 matches
-9863 matched lines
-1052 files contained matches
+8340 matches
+8214 matched lines
+860 files contained matches
 ```
 
 #### arc-discharge
@@ -140,19 +146,19 @@ Using `ripgrep`, we search for uses of unsafe inside the source and vendored dep
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Rust                   16         2800         2121          180          499
- |- Markdown            14         1829            9         1385          435
- (Total)                           4629         2130         1565          934
+ Rust                   16         2711         2054          176          481
+ |- Markdown            14         1678            9         1264          405
+ (Total)                           4389         2063         1440          886
 ===============================================================================
- Total                  16         2800         2121          180          499
+ Total                  16         2711         2054          176          481
 ===============================================================================
 
 # unsafe
-3133 matches
-3067 matched lines
-474 files contained matches
+1023 matches
+970 matched lines
+147 files contained matches
 ```
 
 #### Results
 
-arc-discharge has only 5% of the code that tokio has, and only a third of the unsafe code.
+arc-discharge has only 5% of the code that tokio has, and 1/8th of the total unsafe code.

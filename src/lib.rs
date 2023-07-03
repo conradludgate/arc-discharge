@@ -8,7 +8,7 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Wake, Waker};
-use std::thread::{self, Thread};
+use std::thread::{self, available_parallelism, Thread};
 use sync_slot_map::SyncSlotMap;
 use task::{PinQueue, PinTask, Task};
 
@@ -49,44 +49,21 @@ impl MTRuntime {
         });
 
         // no init step
-        let init = (0..n.get()).map(|i| (i, || {})).collect();
-        shared.init_workers(init);
+        shared.init_workers(n);
 
         shared
     }
 
-    /// Make a new multi-threaded runtime with a thread per logical CPU, with the appropriate
-    /// CPU afinity set.
+    /// Make a new multi-threaded runtime with a thread per logical CPU
     pub fn thread_per_core() -> Arc<Self> {
-        let cores = core_affinity::get_core_ids().unwrap();
-
-        let (driver, handle) = io::IODriver::new();
-        let shared = Arc::new(MTRuntime {
-            global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
-            workers: OnceLock::new(),
-            parked_workers: SyncSlotMap::new(cores.len()),
-            io_handle: Arc::new(handle),
-            io_driver: Mutex::new(driver),
-        });
-
-        let init = cores
-            .into_iter()
-            .map(|c| {
-                move || {
-                    core_affinity::set_for_current(c);
-                }
-            })
-            .enumerate()
-            .collect();
-        shared.init_workers(init);
-
-        shared
+        let cores = available_parallelism().unwrap();
+        Self::new(cores)
     }
 
     /// Make a new multi-threaded runtime with `n` background threads
-    fn init_workers(self: &Arc<Self>, worker_init: Vec<(usize, impl FnOnce() + Send + 'static)>) {
-        let mut workers = Vec::with_capacity(worker_init.len());
-        for (i, init) in worker_init {
+    fn init_workers(self: &Arc<Self>, worker_init: NonZeroUsize) {
+        let mut workers = Vec::with_capacity(worker_init.get());
+        for i in 0..worker_init.get() {
             let exec = ExecutorHandle {
                 worker_index: i,
                 shared: self.clone(),
@@ -95,8 +72,6 @@ impl MTRuntime {
             let thread = thread::Builder::new()
                 .name(format!("arc-dispatch-worker-{i}"))
                 .spawn(|| {
-                    init();
-
                     // park until we can start
                     while exec.shared.workers.get().is_none() {
                         thread::park();
@@ -233,31 +208,25 @@ impl ExecutorHandle {
         let mut counter = 0_usize;
         loop {
             counter = counter.wrapping_add(1);
-            let task = if counter % 31 == 0 {
-                if self.local_queue.borrow().len() < 16 {
-                    self.get_many_global_tasks()
-                } else {
-                    self.get_global_task().or_else(|| self.get_local_task())
-                }
-            } else {
+            let task = if counter % 31 != 0 || self.local_queue.borrow().len() > 16 {
                 self.get_local_task()
-                    .or_else(|| self.get_many_global_tasks())
+            } else {
+                None
             };
+            let task = task.or_else(|| self.get_many_global_tasks());
             if let Some(task) = task {
                 Task::run(task);
+            } else if let Ok(mut io) = self.shared.io_driver.try_lock() {
+                // *parking = Some(WorkerThreadWaker::IO);
+                // drop(parking);
+                io.poll_timeout(&self.shared.io_handle, None);
             } else {
                 let mut parking = worker.parker.lock().unwrap();
                 if parking.is_none() {
                     self.shared.parked_workers.push(self.worker_index);
                 }
-                if let Ok(mut io) = self.shared.io_driver.try_lock() {
-                    *parking = Some(WorkerThreadWaker::IO);
-                    drop(parking);
-                    io.poll_timeout(&self.shared.io_handle, None);
-                } else {
-                    *parking = Some(WorkerThreadWaker::Parked);
-                    *worker.unparker.wait(parking).unwrap() = None;
-                }
+                *parking = Some(WorkerThreadWaker::Parked);
+                *worker.unparker.wait(parking).unwrap() = None;
             }
         }
     }
@@ -267,16 +236,13 @@ impl ExecutorHandle {
         queue.pop_front()
     }
 
-    fn get_global_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
-        self.shared.global_queue.lock().unwrap().pop_front()
-    }
-
     fn get_many_global_tasks(&self) -> Option<PinTask<dyn FutureWithOutput>> {
         let mut global = self.shared.global_queue.lock().unwrap();
         let mut queue = self.local_queue.borrow_mut();
-        for _ in 0..8 {
+        for _ in 0..4 {
             if let Some(next) = global.pop_front() {
-                queue.push_front(next);
+                // CURRENT_GLOBAL.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                queue.push_back(next);
             }
         }
         queue.pop_front()
@@ -286,7 +252,6 @@ impl ExecutorHandle {
 #[derive(Debug)]
 enum WorkerThreadWaker {
     Parked,
-    IO,
 }
 
 pub fn spawn<F: Future + Send + Sync + 'static>(f: F) -> JoinHandle<F::Output>
