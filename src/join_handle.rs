@@ -2,12 +2,11 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
-use arc_dyn::ThinArc;
-
-use crate::{task::Task, PinTask};
+use crate::task::{DynTask, Task};
 
 pin_project_lite::pin_project!(
     #[project = JoinInnerProj]
@@ -45,18 +44,18 @@ impl<F: Future> Future for JoinInner<F> {
 }
 
 pub struct JoinHandle<O> {
-    task: PinTask<dyn FutureWithOutput>,
+    task: Arc<dyn DynTask>,
     output: PhantomData<O>,
 }
 
 impl<O> JoinHandle<O>
 where
-    O: Send + Sync + 'static,
+    O: Send + 'static,
 {
     pub(crate) fn new(
-        task: Task<JoinInner<impl Future<Output = O> + Send + Sync + 'static>>,
-    ) -> (PinTask<dyn FutureWithOutput>, Self) {
-        let task: PinTask<dyn FutureWithOutput> = ThinArc::pin(task);
+        task: Task<impl Future<Output = O> + Send + 'static>,
+    ) -> (Arc<dyn DynTask>, Self) {
+        let task: Arc<dyn DynTask> = Arc::new(task);
         let task2 = task.clone();
 
         let this = Self {
@@ -71,13 +70,11 @@ impl<O: 'static> Future for JoinHandle<O> {
     type Output = O;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut fut = Task::lock_fut(&self.task);
-
         let mut out = Poll::Pending;
 
         #[cfg(debug_assertions)]
         {
-            assert_eq!(fut.output_type_id(), std::any::TypeId::of::<O>());
+            assert_eq!(self.task.output_type_id(), std::any::TypeId::of::<O>());
         }
 
         // a bit annoying we need unsafe here, but we need to type-erase the output.
@@ -88,41 +85,11 @@ impl<O: 'static> Future for JoinHandle<O> {
         // SAFETY:
         // we know the task was created as a `JoinInner<Future<Output = ()>>` as
         // enforced by the `JoinHandle::new()` function.
-        unsafe { fut.as_mut().take_output(&mut out as *mut _ as *mut ()) }
+        unsafe { self.task.take_output(&mut out as *mut _ as *mut ()) }
 
         if out.is_pending() {
-            Task::register(&self.task, cx.waker());
+            self.task.register(cx.waker());
         }
         out
-    }
-}
-
-pub(crate) trait FutureWithOutput: Future<Output = ()> + Send + Sync + 'static {
-    /// # Safety
-    /// the output pointer must point to a valid `Poll<Output>` that is writeable and currently set to `Pending`
-    unsafe fn take_output(self: Pin<&mut Self>, output: *mut ());
-
-    #[cfg(debug_assertions)]
-    fn output_type_id(&self) -> std::any::TypeId;
-}
-
-impl<F> FutureWithOutput for JoinInner<F>
-where
-    F: Future + Send + Sync + 'static,
-    F::Output: Send + Sync + 'static,
-{
-    unsafe fn take_output(self: Pin<&mut Self>, output: *mut ()) {
-        let output = output as *mut Poll<F::Output>;
-        if let JoinInnerProj::Return { val } = self.project() {
-            if let Some(val) = val.take() {
-                // SAFETY: enforced by the caller of this unsafe fn that `output` is `Poll<Output>` and is writeable
-                unsafe { output.write(Poll::Ready(val)) }
-            }
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn output_type_id(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<F::Output>()
     }
 }

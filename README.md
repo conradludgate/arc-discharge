@@ -20,95 +20,106 @@ Using [oha](https://github.com/hatoo/oha) to load test a [demo HTTP app](https:/
 
 #### tokio
 
-<details><summary>Requests/sec: 154639.7143</summary>
+<details><summary>Requests/sec: 140462.7993</summary>
 
 ```
 Summary:
-  Success rate: 100.00%
-  Total:        64.6664 secs
-  Slowest:      0.1320 secs
-  Fastest:      0.0000 secs
-  Average:      0.0012 secs
-  Requests/sec: 154639.7143
+  Success rate:	100.00%
+  Total:	14.2386 secs
+  Slowest:	0.0150 secs
+  Fastest:	0.0000 secs
+  Average:	0.0009 secs
+  Requests/sec:	140462.7993
 
-  Total data:   257.49 MiB
-  Size/request: 27 B
-  Size/sec:	    3.98 MiB
+  Total data:	51.50 MiB
+  Size/request:	27 B
+  Size/sec:	3.62 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.013 [9999909] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.026 [0]       |
-  0.040 [0]       |
-  0.053 [0]       |
-  0.066 [6]       |
-  0.079 [4]       |
-  0.092 [11]      |
-  0.106 [5]       |
-  0.119 [0]       |
-  0.132 [1]       |
+  0.002 [1979204] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.003 [19933]   |
+  0.005 [203]     |
+  0.006 [45]      |
+  0.008 [90]      |
+  0.009 [12]      |
+  0.011 [11]      |
+  0.012 [334]     |
+  0.014 [39]      |
+  0.015 [128]     |
 
 Response time distribution:
-  10% in 0.0009 secs
-  25% in 0.0011 secs
-  50% in 0.0012 secs
-  75% in 0.0014 secs
-  90% in 0.0016 secs
-  95% in 0.0019 secs
-  99% in 0.0023 secs
+  10.00% in 0.0007 secs
+  25.00% in 0.0008 secs
+  50.00% in 0.0009 secs
+  75.00% in 0.0010 secs
+  90.00% in 0.0011 secs
+  95.00% in 0.0012 secs
+  99.00% in 0.0016 secs
+  99.90% in 0.0023 secs
+  99.99% in 0.0119 secs
+
+
+Details (average, fastest, slowest):
+  DNS+dialup:	0.0046 secs, 0.0033 secs, 0.0064 secs
+  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0009 secs
 
 Status code distribution:
-  [200] 9999937 responses
-
-Error distribution:
-  [63] connection error: Connection reset by peer (os error 54)
+  [200] 2000000 responses
 ```
 </details>
 
 #### arc-discharge
 
-<details><summary>Requests/sec:	149558.2923</summary>
+<details><summary>Requests/sec:	137845.6894</summary>
 
 ```
 Summary:
-  Success rate: 100.00%
-  Total:        66.8636 secs
-  Slowest:      0.1409 secs
-  Fastest:      0.0000 secs
-  Average:      0.0013 secs
-  Requests/sec: 149558.2923
+  Success rate:	100.00%
+  Total:	14.5090 secs
+  Slowest:	0.0241 secs
+  Fastest:	0.0000 secs
+  Average:	0.0009 secs
+  Requests/sec:	137845.6894
 
-  Total data:   257.49 MiB
-  Size/request: 27 B
-  Size/sec:     3.85 MiB
+  Total data:	51.50 MiB
+  Size/request:	27 B
+  Size/sec:	3.55 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.014 [9999927] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.028 [0]       |
-  0.042 [0]       |
-  0.056 [0]       |
-  0.070 [4]       |
-  0.085 [3]       |
-  0.099 [1]       |
-  0.113 [1]       |
-  0.127 [0]       |
-  0.141 [1]       |
+  0.002 [1986012] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.005 [10024]   |
+  0.007 [2308]    |
+  0.010 [748]     |
+  0.012 [410]     |
+  0.014 [252]     |
+  0.017 [176]     |
+  0.019 [16]      |
+  0.022 [18]      |
+  0.024 [34]      |
 
 Response time distribution:
-  10% in 0.0009 secs
-  25% in 0.0010 secs
-  50% in 0.0012 secs
-  75% in 0.0015 secs
-  90% in 0.0019 secs
-  95% in 0.0021 secs
-  99% in 0.0024 secs
+  10.00% in 0.0006 secs
+  25.00% in 0.0007 secs
+  50.00% in 0.0008 secs
+  75.00% in 0.0010 secs
+  90.00% in 0.0013 secs
+  95.00% in 0.0015 secs
+  99.00% in 0.0021 secs
+  99.90% in 0.0067 secs
+  99.99% in 0.0150 secs
+
+
+Details (average, fastest, slowest):
+  DNS+dialup:	0.0031 secs, 0.0008 secs, 0.0043 secs
+  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0008 secs
 
 Status code distribution:
-  [200] 9999938 responses
+  [200] 1999999 responses
 
 Error distribution:
-  [62] connection error: Connection reset by peer (os error 54)
+  [1] connection error
 ```
 </details>
 

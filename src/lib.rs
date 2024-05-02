@@ -1,6 +1,8 @@
-use arc_dyn::ThinArc;
-use join_handle::{FutureWithOutput, JoinHandle};
-use pin_queue::AlreadyInsertedError;
+#![feature(arbitrary_self_types)]
+
+use intrusive_collections::XorLinkedList;
+use join_handle::JoinHandle;
+use linked_list::TaskAdapter;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -10,18 +12,19 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Wake, Waker};
 use std::thread::{self, available_parallelism, Thread};
 use sync_slot_map::SyncSlotMap;
-use task::{PinQueue, PinTask, Task};
+use task::{DynTask, Task};
 
 mod bits;
 mod io;
 mod join_handle;
+mod linked_list;
 pub mod net;
 mod sync_slot_map;
 mod task;
 
 /// Multithreaded runtime
 pub struct MTRuntime {
-    global_queue: Mutex<PinQueue>,
+    global_queue: Mutex<XorLinkedList<TaskAdapter>>,
     workers: OnceLock<Box<[Worker]>>,
     parked_workers: SyncSlotMap,
     io_handle: Arc<io::Handle>,
@@ -41,7 +44,7 @@ impl MTRuntime {
     pub fn new(n: NonZeroUsize) -> Arc<Self> {
         let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
-            global_queue: Mutex::new(PinQueue::new(pin_queue::id::Checked::new())),
+            global_queue: Mutex::new(XorLinkedList::new(TaskAdapter::new())),
             workers: OnceLock::new(),
             parked_workers: SyncSlotMap::new(n.get()),
             io_handle: Arc::new(handle),
@@ -139,65 +142,58 @@ impl MTRuntime {
     }
 
     /// spawn a task onto this runtime
-    pub fn spawn<F: Future + Send + Sync + 'static>(self: &Arc<Self>, f: F) -> JoinHandle<F::Output>
+    pub fn spawn<F: Future + Send + 'static>(self: &Arc<Self>, f: F) -> JoinHandle<F::Output>
     where
-        F::Output: Send + Sync + 'static,
+        F::Output: Send + 'static,
     {
         let task = Task::new(self.clone(), f);
         let (task, join) = JoinHandle::new(task);
 
-        HANDLE
-            .with(|x| {
-                if let Some(local) = x
-                    .borrow()
-                    .as_ref()
-                    .filter(|exec| Arc::ptr_eq(&exec.shared, self))
-                {
-                    local.schedule_local(task)
-                } else {
-                    Task::schedule_global(task)
-                }
-            })
-            .expect("new task cannot exist in another queue");
+        HANDLE.with(|x| {
+            if let Some(local) = x
+                .borrow()
+                .as_ref()
+                .filter(|exec| Arc::ptr_eq(&exec.shared, self))
+            {
+                local.schedule_local(task)
+            } else {
+                task.schedule_global()
+            }
+        });
 
         join
     }
 }
 
 thread_local! {
-    static HANDLE: RefCell<Option<Rc<ExecutorHandle>>> = RefCell::new(None);
+    static HANDLE: RefCell<Option<Rc<ExecutorHandle>>> = const { RefCell::new(None) };
 }
 
 struct ExecutorHandle {
     worker_index: usize,
     shared: Arc<MTRuntime>,
-    local_queue: RefCell<VecDeque<PinTask<dyn FutureWithOutput>>>,
+    local_queue: RefCell<VecDeque<Arc<dyn DynTask>>>,
 }
 
 impl ExecutorHandle {
-    fn spawn<F: Future + Send + Sync + 'static>(&self, f: F) -> JoinHandle<F::Output>
+    fn spawn<F: Future + Send + 'static>(&self, f: F) -> JoinHandle<F::Output>
     where
-        F::Output: Send + Sync + 'static,
+        F::Output: Send + 'static,
     {
         let task = Task::new(self.shared.clone(), f);
         let (task, join) = JoinHandle::new(task);
 
-        self.schedule_local(task)
-            .expect("new task cannot exist in another queue");
+        self.schedule_local(task);
 
         join
     }
 
-    fn schedule_local(
-        &self,
-        task: PinTask<dyn FutureWithOutput>,
-    ) -> Result<(), AlreadyInsertedError<ThinArc<Task<dyn FutureWithOutput>>>> {
+    fn schedule_local(&self, task: Arc<dyn DynTask>) {
         let mut queue = self.local_queue.borrow_mut();
         if queue.len() < queue.capacity() {
             queue.push_back(task);
-            Ok(())
         } else {
-            Task::schedule_global(task)
+            task.schedule_global();
         }
     }
 
@@ -215,7 +211,7 @@ impl ExecutorHandle {
             };
             let task = task.or_else(|| self.get_many_global_tasks());
             if let Some(task) = task {
-                Task::run(task);
+                task.run();
             } else if let Ok(mut io) = self.shared.io_driver.try_lock() {
                 // *parking = Some(WorkerThreadWaker::IO);
                 // drop(parking);
@@ -231,12 +227,12 @@ impl ExecutorHandle {
         }
     }
 
-    fn get_local_task(&self) -> Option<PinTask<dyn FutureWithOutput>> {
+    fn get_local_task(&self) -> Option<Arc<dyn DynTask>> {
         let mut queue = self.local_queue.borrow_mut();
         queue.pop_front()
     }
 
-    fn get_many_global_tasks(&self) -> Option<PinTask<dyn FutureWithOutput>> {
+    fn get_many_global_tasks(&self) -> Option<Arc<dyn DynTask>> {
         let mut global = self.shared.global_queue.lock().unwrap();
         let mut queue = self.local_queue.borrow_mut();
         for _ in 0..4 {
@@ -254,9 +250,9 @@ enum WorkerThreadWaker {
     Parked,
 }
 
-pub fn spawn<F: Future + Send + Sync + 'static>(f: F) -> JoinHandle<F::Output>
+pub fn spawn<F: Future + Send + 'static>(f: F) -> JoinHandle<F::Output>
 where
-    F::Output: Send + Sync + 'static,
+    F::Output: Send + 'static,
 {
     HANDLE.with(|x| {
         x.borrow()

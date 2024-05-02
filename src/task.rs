@@ -1,26 +1,24 @@
 use std::{
     pin::Pin,
+    ptr::{addr_of, NonNull},
     sync::{atomic::AtomicBool, Arc},
-    task::{Context, Waker},
+    task::{Context, Poll, Waker},
 };
 
-use arc_dyn::ThinArc;
 use futures_util::{task::AtomicWaker, Future};
-use pin_lock::PinLockGuard;
-use pin_queue::AlreadyInsertedError;
 
 use crate::{
-    join_handle::{FutureWithOutput, JoinInner},
+    join_handle::{JoinInner, JoinInnerProj},
+    linked_list::FatLink,
     sync_slot_map::ReadySlot,
     MTRuntime, WorkerThreadWaker, HANDLE,
 };
 
 // our Task type that stores the intrusive pointers and our futures
 pin_project_lite::pin_project!(
-    pub(crate) struct Task<F: ?Sized> {
+    pub(crate) struct Task<F: Future> {
         // intrusive pointers
-        #[pin]
-        pub(crate) intrusive: pin_queue::Intrusive<QueueTypes>,
+        pub(crate) link: FatLink,
 
         // pointer to the runtime handle
         pub(crate) handle: Arc<MTRuntime>,
@@ -28,29 +26,43 @@ pin_project_lite::pin_project!(
         // who should be notified of this task completing
         pub(crate) complete: AtomicBool,
         pub(crate) waker: AtomicWaker,
-
         // the future for this task
         #[pin]
-        pub(crate) fut: pin_lock::PinLock<F>,
+        pub(crate) fut: pin_lock::PinLock<JoinInner<F>>,
     }
 );
 
-impl Task<dyn FutureWithOutput> {
-    pub(crate) fn schedule_global(
-        task: Pin<ThinArc<Self>>,
-    ) -> Result<(), AlreadyInsertedError<ThinArc<Self>>> {
-        task.handle
+pub(crate) trait DynTask: Send + Sync + 'static {
+    fn schedule_global(self: Arc<Self>);
+    fn register(&self, waker: &Waker);
+    fn run(self: Arc<Self>);
+
+    /// # Safety
+    /// the output pointer must point to a valid `Poll<Output>` that is writeable and currently set to `Pending`
+    unsafe fn take_output(&self, output: *mut ());
+    #[cfg(debug_assertions)]
+    fn output_type_id(&self) -> std::any::TypeId;
+
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink>;
+}
+
+impl<F: Future + Send + 'static> DynTask for Task<F>
+where
+    F::Output: Send + 'static,
+{
+    fn schedule_global(self: Arc<Self>) {
+        self.handle
             .global_queue
             .lock()
             .unwrap()
-            .push_back(task.clone())?;
+            .push_back(self.clone());
 
         // if we push to the global queue, we should try wake up a worker to process it
         // if it's already locked, then we know another worker is already being woken up.
-        if let Some(mut parked) = task.handle.parked_workers.try_lock() {
+        if let Some(mut parked) = self.handle.parked_workers.try_lock() {
             loop {
                 if let ReadySlot::Ready(index) = parked.pop() {
-                    let worker = &task
+                    let worker = &self
                         .handle
                         .workers
                         .get()
@@ -68,20 +80,61 @@ impl Task<dyn FutureWithOutput> {
                         }
                     }
                 } else {
-                    task.handle.io_handle.wake();
+                    self.handle.io_handle.wake();
                     break;
                 }
             }
         }
+    }
 
-        Ok(())
+    unsafe fn take_output(&self, output: *mut ()) {
+        let this = Pin::new_unchecked(self);
+        let mut fut = this.as_ref().project_ref().fut.lock();
+        let output = output as *mut Poll<F::Output>;
+        if let JoinInnerProj::Return { val } = fut.as_mut().project() {
+            if let Some(val) = val.take() {
+                // SAFETY: enforced by the caller of this unsafe fn that `output` is `Poll<Output>` and is writeable
+                unsafe { output.write(Poll::Ready(val)) }
+            }
+        }
+    }
+
+    fn register(&self, waker: &Waker) {
+        self.waker.register(waker)
+    }
+
+    fn run(self: Arc<Self>) {
+        let waker = self.clone().into();
+        let mut cx = Context::from_waker(&waker);
+        // if it's locked, then it's already being polled or complete. we don't care
+        // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
+        // is always pinned and never moved until the Arc deallocates.
+        if let Some(mut fut) = unsafe { Pin::new_unchecked(&self.fut) }.try_lock() {
+            if fut.as_mut().poll(&mut cx).is_ready() {
+                self.complete
+                    .store(true, std::sync::atomic::Ordering::Release);
+                self.waker.wake()
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn output_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<F::Output>()
+    }
+
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink> {
+        NonNull::new_unchecked(addr_of!((*self).link).cast_mut())
     }
 }
 
-impl<F: Future> Task<JoinInner<F>> {
+impl<F: Future + Send + 'static> Task<F>
+where
+    F::Output: Send + 'static,
+{
     pub(crate) fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
         Self {
-            intrusive: pin_queue::Intrusive::new(),
+            link: FatLink::new::<F>(),
             fut: pin_lock::PinLock::new(JoinInner::new(fut)),
             handle,
             complete: AtomicBool::new(false),
@@ -90,56 +143,19 @@ impl<F: Future> Task<JoinInner<F>> {
     }
 }
 
-impl Task<dyn FutureWithOutput> {
-    pub(crate) fn lock_fut(
-        task: &PinTask<dyn FutureWithOutput>,
-    ) -> PinLockGuard<'_, dyn FutureWithOutput> {
-        task.as_ref().project_ref().fut.lock()
-    }
-    pub(crate) fn register(task: &PinTask<dyn FutureWithOutput>, waker: &Waker) {
-        task.waker.register(waker)
-    }
-
-    pub(crate) fn run(task: PinTask<dyn FutureWithOutput>) {
-        let waker = Waker::from(task.clone());
-        let mut cx = Context::from_waker(&waker);
-        // if it's locked, then it's already being polled or complete. we don't care
-        if let Some(mut fut) = task.as_ref().project_ref().fut.try_lock() {
-            if fut.as_mut().poll(&mut cx).is_ready() {
-                task.complete
-                    .store(true, std::sync::atomic::Ordering::Release);
-                task.waker.wake()
-            }
-        }
-    }
-}
-
-// pin-queue stuff
-pub(crate) type PinTask<F> = Pin<ThinArc<Task<F>>>;
-pub(crate) type QueueTypes = dyn pin_queue::Types<
-    Id = pin_queue::id::Checked,
-    Key = Key,
-    Pointer = ThinArc<Task<dyn FutureWithOutput>>,
->;
-pub(crate) type PinQueue = pin_queue::PinQueue<QueueTypes>;
-
-pub(crate) struct Key;
-impl pin_queue::GetIntrusive<QueueTypes> for Key {
-    fn get_intrusive(
-        p: Pin<&Task<dyn FutureWithOutput>>,
-    ) -> Pin<&pin_queue::Intrusive<QueueTypes>> {
-        p.project_ref().intrusive
-    }
-}
-
 // impl ThinWake so our task can be used as a waker
-impl arc_dyn::pin_queue::ThinWake for Task<dyn FutureWithOutput> {
-    fn wake(task: PinTask<dyn FutureWithOutput>) {
-        let _ = HANDLE.with(|x| match &*x.borrow() {
+impl<F: Future + Send + 'static> std::task::Wake for Task<F>
+where
+    F::Output: Send + 'static,
+{
+    fn wake(self: Arc<Self>) {
+        HANDLE.with(|x| match &*x.borrow() {
             // fast path, the current executor is part of the task's runtime
-            Some(exe) if Arc::ptr_eq(&exe.shared, &task.handle) => exe.schedule_local(task),
+            Some(exe) if Arc::ptr_eq(&exe.shared, &self.handle) => {
+                exe.schedule_local(self as Arc<dyn DynTask>)
+            }
             // slow path, global schedule
-            _ => Self::schedule_global(task),
+            _ => self.schedule_global(),
         });
     }
 }

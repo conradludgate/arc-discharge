@@ -13,10 +13,9 @@ mio = { version = "0.8.6", features = ["os-poll", "net"] }
 sharded-slab = "0.1.4"
 pin-list = "0.1.0"
 arrayvec = "0.7.2"
+intrusive-collections = "0.9.6"
 
 pin-lock = { git = "https://github.com/conradludgate/pin-lock" }
-pin-queue = { git = "https://github.com/conradludgate/pin-queue" }
-arc-dyn = { git = "https://github.com/conradludgate/arc-dyn" }
 
 [dev-dependencies]
 bytes = "1.0.0"
