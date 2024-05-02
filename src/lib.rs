@@ -24,7 +24,7 @@ mod task;
 
 /// Multithreaded runtime
 pub struct MTRuntime {
-    global_queue: Mutex<XorLinkedList<TaskAdapter>>,
+    global_queue: Mutex<XorLinkedList<TaskAdapter<dyn DynTask>>>,
     workers: OnceLock<Box<[Worker]>>,
     parked_workers: SyncSlotMap,
     io_handle: Arc<io::Handle>,

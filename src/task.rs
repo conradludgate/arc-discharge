@@ -1,6 +1,6 @@
 use std::{
     pin::Pin,
-    ptr::{addr_of, NonNull},
+    ptr::NonNull,
     sync::{atomic::AtomicBool, Arc},
     task::{Context, Poll, Waker},
 };
@@ -9,7 +9,7 @@ use futures_util::{task::AtomicWaker, Future};
 
 use crate::{
     join_handle::{JoinInner, JoinInnerProj},
-    linked_list::FatLink,
+    linked_list::{DynLink, FatLink},
     sync_slot_map::ReadySlot,
     MTRuntime, WorkerThreadWaker, HANDLE,
 };
@@ -18,7 +18,7 @@ use crate::{
 pin_project_lite::pin_project!(
     pub(crate) struct Task<F: Future> {
         // intrusive pointers
-        pub(crate) link: FatLink,
+        pub(crate) link: FatLink<dyn DynTask>,
 
         // pointer to the runtime handle
         pub(crate) handle: Arc<MTRuntime>,
@@ -43,7 +43,7 @@ pub(crate) trait DynTask: Send + Sync + 'static {
     #[cfg(debug_assertions)]
     fn output_type_id(&self) -> std::any::TypeId;
 
-    unsafe fn get_link(self: *const Self) -> NonNull<FatLink>;
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>>;
 }
 
 impl<F: Future + Send + 'static> DynTask for Task<F>
@@ -123,8 +123,8 @@ where
         std::any::TypeId::of::<F::Output>()
     }
 
-    unsafe fn get_link(self: *const Self) -> NonNull<FatLink> {
-        NonNull::new_unchecked(addr_of!((*self).link).cast_mut())
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>> {
+        <Self as DynLink<dyn DynTask>>::get_link(self)
     }
 }
 
@@ -134,7 +134,7 @@ where
 {
     pub(crate) fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
         Self {
-            link: FatLink::new::<F>(),
+            link: FatLink::new::<Self>(),
             fut: pin_lock::PinLock::new(JoinInner::new(fut)),
             handle,
             complete: AtomicBool::new(false),

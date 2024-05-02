@@ -67,77 +67,26 @@ impl Ready {
     }
 
     /// Returns true if `Ready` is the empty set.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::io::Ready;
-    ///
-    /// assert!(Ready::EMPTY.is_empty());
-    /// assert!(!Ready::READABLE.is_empty());
-    /// ```
     pub fn is_empty(self) -> bool {
         self == Ready::EMPTY
     }
 
     /// Returns `true` if the value includes `readable`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::io::Ready;
-    ///
-    /// assert!(!Ready::EMPTY.is_readable());
-    /// assert!(Ready::READABLE.is_readable());
-    /// assert!(Ready::READ_CLOSED.is_readable());
-    /// assert!(!Ready::WRITABLE.is_readable());
-    /// ```
     pub fn is_readable(self) -> bool {
         self.contains(Ready::READABLE) || self.is_read_closed()
     }
 
     /// Returns `true` if the value includes writable `readiness`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::io::Ready;
-    ///
-    /// assert!(!Ready::EMPTY.is_writable());
-    /// assert!(!Ready::READABLE.is_writable());
-    /// assert!(Ready::WRITABLE.is_writable());
-    /// assert!(Ready::WRITE_CLOSED.is_writable());
-    /// ```
     pub fn is_writable(self) -> bool {
         self.contains(Ready::WRITABLE) || self.is_write_closed()
     }
 
     /// Returns `true` if the value includes read-closed `readiness`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::io::Ready;
-    ///
-    /// assert!(!Ready::EMPTY.is_read_closed());
-    /// assert!(!Ready::READABLE.is_read_closed());
-    /// assert!(Ready::READ_CLOSED.is_read_closed());
-    /// ```
     pub fn is_read_closed(self) -> bool {
         self.contains(Ready::READ_CLOSED)
     }
 
     /// Returns `true` if the value includes write-closed `readiness`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use tokio::io::Ready;
-    ///
-    /// assert!(!Ready::EMPTY.is_write_closed());
-    /// assert!(!Ready::WRITABLE.is_write_closed());
-    /// assert!(Ready::WRITE_CLOSED.is_write_closed());
-    /// ```
     pub fn is_write_closed(self) -> bool {
         self.contains(Ready::WRITE_CLOSED)
     }

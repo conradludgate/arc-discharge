@@ -530,9 +530,7 @@ impl Future for Readiness<'_> {
                     if let Some(init) = this.waiter.as_mut().initialized_mut() {
                         if let Some(waker) = init.protected_mut(&mut waiters.list) {
                             // Update the waker, if necessary.
-                            if !waker.will_wake(cx.waker()) {
-                                *waker = cx.waker().clone();
-                            }
+                            waker.clone_from(cx.waker());
 
                             return Poll::Pending;
                         }
