@@ -7,7 +7,7 @@ use std::{
 
 use futures_util::Future;
 use intrusive_collections::{
-    xor_linked_list::XorLinkedListOps, DefaultPointerOps, XorLinkedListAtomicLink,
+    xor_linked_list::XorLinkedListOps, DefaultLinkOps, DefaultPointerOps, XorLinkedListAtomicLink,
 };
 
 use crate::task::{DynTask, Task};
@@ -18,7 +18,7 @@ pub(crate) struct FatLink<D: ?Sized> {
 }
 
 impl<D: ?Sized> FatLink<D> {
-    pub(crate) const fn new<L: DynLink<D>>() -> Self {
+    pub(crate) const fn new<L: FatLinked<D>>() -> Self {
         FatLink {
             link: XorLinkedListAtomicLink::new(),
             get_value: L::get_value,
@@ -38,10 +38,31 @@ impl<D: ?Sized> FatLink<D> {
     }
 }
 
-#[derive(Clone, Copy)]
+impl<D: ?Sized> DefaultLinkOps for FatLink<D> {
+    type Ops = FatLinkOps<D>;
+
+    const NEW: Self::Ops = FatLinkOps {
+        ops: <XorLinkedListAtomicLink as intrusive_collections::DefaultLinkOps>::NEW,
+        d: PhantomData,
+    };
+}
+
 pub(crate) struct FatLinkOps<D: ?Sized> {
     ops: intrusive_collections::xor_linked_list::AtomicLinkOps,
     d: PhantomData<D>,
+}
+
+impl<D: ?Sized> Copy for FatLinkOps<D> {}
+impl<D: ?Sized> Clone for FatLinkOps<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D: ?Sized> Default for FatLinkOps<D> {
+    fn default() -> Self {
+        <FatLink<D> as DefaultLinkOps>::NEW
+    }
 }
 
 unsafe impl<D: ?Sized> intrusive_collections::LinkOps for FatLinkOps<D> {
@@ -110,28 +131,31 @@ unsafe impl<D: ?Sized> XorLinkedListOps for FatLinkOps<D> {
     }
 }
 
-#[allow(explicit_outlives_requirements)]
-#[derive(Clone, Copy)]
-pub(crate) struct TaskAdapter<D: ?Sized> {
-    link_ops: FatLinkOps<D>,
-    pointer_ops: intrusive_collections::DefaultPointerOps<Arc<D>>,
+pub(crate) trait FatLinked<D: ?Sized> {
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<D>>;
+    unsafe fn get_value(ptr: NonNull<FatLink<D>>) -> *const D;
 }
 
-impl<D: ?Sized> Default for TaskAdapter<D> {
+/// TODO: move the above to a separate crate, make the below a safe macro
+
+#[allow(explicit_outlives_requirements)]
+#[derive(Clone, Copy)]
+pub(crate) struct TaskAdapter {
+    link_ops: FatLinkOps<dyn DynTask>,
+    pointer_ops: intrusive_collections::DefaultPointerOps<Arc<dyn DynTask>>,
+}
+
+impl Default for TaskAdapter {
     #[inline]
     fn default() -> Self {
         Self::NEW
     }
 }
 
-#[allow(dead_code)]
-impl<D: ?Sized> TaskAdapter<D> {
+impl TaskAdapter {
     pub const NEW: Self = TaskAdapter {
-        link_ops: FatLinkOps {
-            ops: <XorLinkedListAtomicLink as intrusive_collections::DefaultLinkOps>::NEW,
-            d: PhantomData,
-        },
-        pointer_ops: DefaultPointerOps::<Arc<D>>::new(),
+        link_ops: <FatLink<dyn DynTask> as intrusive_collections::DefaultLinkOps>::NEW,
+        pointer_ops: DefaultPointerOps::<Arc<dyn DynTask>>::new(),
     };
     #[inline]
     pub fn new() -> Self {
@@ -139,7 +163,7 @@ impl<D: ?Sized> TaskAdapter<D> {
     }
 }
 
-unsafe impl intrusive_collections::Adapter for TaskAdapter<dyn DynTask> {
+unsafe impl intrusive_collections::Adapter for TaskAdapter {
     type LinkOps = FatLinkOps<dyn DynTask>;
     type PointerOps = DefaultPointerOps<Arc<dyn DynTask>>;
     #[inline]
@@ -167,12 +191,7 @@ unsafe impl intrusive_collections::Adapter for TaskAdapter<dyn DynTask> {
     }
 }
 
-pub(crate) trait DynLink<D: ?Sized> {
-    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<D>>;
-    unsafe fn get_value(ptr: NonNull<FatLink<D>>) -> *const D;
-}
-
-impl<F: Future + Send + 'static> DynLink<dyn DynTask> for Task<F>
+impl<F: Future + Send + 'static> FatLinked<dyn DynTask> for Task<F>
 where
     F::Output: Send + 'static,
 {

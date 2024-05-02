@@ -6,31 +6,30 @@ use std::{
 };
 
 use futures_util::{task::AtomicWaker, Future};
+use parking_lot::Mutex;
 
 use crate::{
-    join_handle::{JoinInner, JoinInnerProj},
-    linked_list::{DynLink, FatLink},
+    join_handle::{JoinError, JoinInner},
+    linked_list::{FatLink, FatLinked},
     sync_slot_map::ReadySlot,
     MTRuntime, WorkerThreadWaker, HANDLE,
 };
 
-// our Task type that stores the intrusive pointers and our futures
-pin_project_lite::pin_project!(
-    pub(crate) struct Task<F: Future> {
-        // intrusive pointers
-        pub(crate) link: FatLink<dyn DynTask>,
+/// our Task type that stores the intrusive pointers and our futures
+pub(crate) struct Task<F: Future> {
+    /// intrusive pointers
+    pub(crate) link: FatLink<dyn DynTask>,
 
-        // pointer to the runtime handle
-        pub(crate) handle: Arc<MTRuntime>,
+    /// pointer to the runtime handle
+    pub(crate) handle: Arc<MTRuntime>,
 
-        // who should be notified of this task completing
-        pub(crate) complete: AtomicBool,
-        pub(crate) waker: AtomicWaker,
-        // the future for this task
-        #[pin]
-        pub(crate) fut: pin_lock::PinLock<JoinInner<F>>,
-    }
-);
+    /// who should be notified of this task completing
+    pub(crate) complete: AtomicBool,
+    pub(crate) waker: AtomicWaker,
+
+    /// the future for this task
+    pub(crate) fut: Mutex<JoinInner<F>>,
+}
 
 pub(crate) trait DynTask: Send + Sync + 'static {
     fn schedule_global(self: Arc<Self>);
@@ -88,14 +87,12 @@ where
     }
 
     unsafe fn take_output(&self, output: *mut ()) {
-        let this = Pin::new_unchecked(self);
-        let mut fut = this.as_ref().project_ref().fut.lock();
-        let output = output as *mut Poll<F::Output>;
-        if let JoinInnerProj::Return { val } = fut.as_mut().project() {
-            if let Some(val) = val.take() {
-                // SAFETY: enforced by the caller of this unsafe fn that `output` is `Poll<Output>` and is writeable
-                unsafe { output.write(Poll::Ready(val)) }
-            }
+        let output = output as *mut Poll<Result<F::Output, JoinError>>;
+        if let JoinInner::Return { val } = &mut *self.fut.lock() {
+            let val = std::mem::replace(val, Err(JoinError::Aborted));
+
+            // SAFETY: enforced by the caller of this unsafe fn that `output` is `Poll<Output>` and is writeable
+            unsafe { output.write(Poll::Ready(val)) }
         }
     }
 
@@ -107,10 +104,12 @@ where
         let waker = self.clone().into();
         let mut cx = Context::from_waker(&waker);
         // if it's locked, then it's already being polled or complete. we don't care
-        // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
-        // is always pinned and never moved until the Arc deallocates.
-        if let Some(mut fut) = unsafe { Pin::new_unchecked(&self.fut) }.try_lock() {
-            if fut.as_mut().poll(&mut cx).is_ready() {
+        if let Some(mut fut) = self.fut.try_lock() {
+            // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
+            // is always pinned and never moved until the Arc deallocates.
+            let fut = unsafe { Pin::new_unchecked(&mut *fut) };
+
+            if fut.poll(&mut cx).is_ready() {
                 self.complete
                     .store(true, std::sync::atomic::Ordering::Release);
                 self.waker.wake()
@@ -124,7 +123,7 @@ where
     }
 
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>> {
-        <Self as DynLink<dyn DynTask>>::get_link(self)
+        <Self as FatLinked<dyn DynTask>>::get_link(self)
     }
 }
 
@@ -135,7 +134,7 @@ where
     pub(crate) fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
         Self {
             link: FatLink::new::<Self>(),
-            fut: pin_lock::PinLock::new(JoinInner::new(fut)),
+            fut: Mutex::new(JoinInner::new(fut)),
             handle,
             complete: AtomicBool::new(false),
             waker: AtomicWaker::new(),
@@ -143,7 +142,7 @@ where
     }
 }
 
-// impl ThinWake so our task can be used as a waker
+// impl Wake so our task can be used as a waker
 impl<F: Future + Send + 'static> std::task::Wake for Task<F>
 where
     F::Output: Send + 'static,

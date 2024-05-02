@@ -1,7 +1,6 @@
 #![feature(arbitrary_self_types)]
 
 use intrusive_collections::XorLinkedList;
-use join_handle::JoinHandle;
 use linked_list::TaskAdapter;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -14,6 +13,8 @@ use std::thread::{self, available_parallelism, Thread};
 use sync_slot_map::SyncSlotMap;
 use task::{DynTask, Task};
 
+pub use join_handle::{JoinError, JoinHandle};
+
 mod bits;
 mod io;
 mod join_handle;
@@ -24,7 +25,7 @@ mod task;
 
 /// Multithreaded runtime
 pub struct MTRuntime {
-    global_queue: Mutex<XorLinkedList<TaskAdapter<dyn DynTask>>>,
+    global_queue: Mutex<XorLinkedList<TaskAdapter>>,
     workers: OnceLock<Box<[Worker]>>,
     parked_workers: SyncSlotMap,
     io_handle: Arc<io::Handle>,
@@ -301,7 +302,7 @@ mod tests {
                 27
             });
 
-            a.await + b.await
+            a.await.unwrap() + b.await.unwrap()
         });
 
         assert_eq!(output, 69);

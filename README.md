@@ -20,33 +20,33 @@ Using [oha](https://github.com/hatoo/oha) to load test a [demo HTTP app](https:/
 
 #### tokio
 
-<details><summary>Requests/sec: 140462.7993</summary>
+<details><summary>Requests/sec: 139769.7159</summary>
 
 ```
 Summary:
   Success rate:	100.00%
-  Total:	14.2386 secs
-  Slowest:	0.0150 secs
+  Total:	14.3093 secs
+  Slowest:	0.0116 secs
   Fastest:	0.0000 secs
   Average:	0.0009 secs
-  Requests/sec:	140462.7993
+  Requests/sec:	139769.7159
 
   Total data:	51.50 MiB
   Size/request:	27 B
-  Size/sec:	3.62 MiB
+  Size/sec:	3.60 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.002 [1979204] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.003 [19933]   |
-  0.005 [203]     |
-  0.006 [45]      |
-  0.008 [90]      |
-  0.009 [12]      |
-  0.011 [11]      |
-  0.012 [334]     |
-  0.014 [39]      |
-  0.015 [128]     |
+  0.001 [1847735] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.002 [148770]  |■■
+  0.003 [2616]    |
+  0.005 [373]     |
+  0.006 [93]      |
+  0.007 [146]     |
+  0.008 [6]       |
+  0.009 [3]       |
+  0.010 [35]      |
+  0.012 [222]     |
 
 Response time distribution:
   10.00% in 0.0007 secs
@@ -54,15 +54,15 @@ Response time distribution:
   50.00% in 0.0009 secs
   75.00% in 0.0010 secs
   90.00% in 0.0011 secs
-  95.00% in 0.0012 secs
+  95.00% in 0.0013 secs
   99.00% in 0.0016 secs
-  99.90% in 0.0023 secs
-  99.99% in 0.0119 secs
+  99.90% in 0.0027 secs
+  99.99% in 0.0106 secs
 
 
 Details (average, fastest, slowest):
-  DNS+dialup:	0.0046 secs, 0.0033 secs, 0.0064 secs
-  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0009 secs
+  DNS+dialup:	0.0030 secs, 0.0024 secs, 0.0043 secs
+  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0007 secs
 
 Status code distribution:
   [200] 2000000 responses
@@ -71,33 +71,33 @@ Status code distribution:
 
 #### arc-discharge
 
-<details><summary>Requests/sec:	137845.6894</summary>
+<details><summary>Requests/sec:	141106.1541</summary>
 
 ```
 Summary:
   Success rate:	100.00%
-  Total:	14.5090 secs
-  Slowest:	0.0241 secs
+  Total:	14.1737 secs
+  Slowest:	0.0156 secs
   Fastest:	0.0000 secs
   Average:	0.0009 secs
-  Requests/sec:	137845.6894
+  Requests/sec:	141106.1541
 
   Total data:	51.50 MiB
   Size/request:	27 B
-  Size/sec:	3.55 MiB
+  Size/sec:	3.63 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.002 [1986012] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.005 [10024]   |
-  0.007 [2308]    |
-  0.010 [748]     |
-  0.012 [410]     |
-  0.014 [252]     |
-  0.017 [176]     |
-  0.019 [16]      |
-  0.022 [18]      |
-  0.024 [34]      |
+  0.002 [1952169] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.003 [45906]   |
+  0.005 [854]     |
+  0.006 [352]     |
+  0.008 [56]      |
+  0.009 [22]      |
+  0.011 [240]     |
+  0.012 [142]     |
+  0.014 [55]      |
+  0.016 [203]     |
 
 Response time distribution:
   10.00% in 0.0006 secs
@@ -105,27 +105,24 @@ Response time distribution:
   50.00% in 0.0008 secs
   75.00% in 0.0010 secs
   90.00% in 0.0013 secs
-  95.00% in 0.0015 secs
-  99.00% in 0.0021 secs
-  99.90% in 0.0067 secs
-  99.99% in 0.0150 secs
+  95.00% in 0.0014 secs
+  99.00% in 0.0018 secs
+  99.90% in 0.0031 secs
+  99.99% in 0.0141 secs
 
 
 Details (average, fastest, slowest):
-  DNS+dialup:	0.0031 secs, 0.0008 secs, 0.0043 secs
-  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0008 secs
+  DNS+dialup:	0.0034 secs, 0.0025 secs, 0.0058 secs
+  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0015 secs
 
 Status code distribution:
-  [200] 1999999 responses
-
-Error distribution:
-  [1] connection error
+  [200] 2000000 responses
 ```
 </details>
 
 #### Results
 
-tokio has a 3.4% throughput advantage.
+`arc-discharge` has a 1.0% throughput advantage, but slightly worse tail latencies
 
 ### Code complexity
 
@@ -157,11 +154,11 @@ Using `ripgrep`, we search for uses of unsafe inside the source and vendored dep
 ===============================================================================
  Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Rust                   16         2711         2054          176          481
- |- Markdown            14         1678            9         1264          405
- (Total)                           4389         2063         1440          886
+ Rust                   17         2921         2235          172          514
+ |- Markdown            15         1633            9         1234          390
+ (Total)                           4554         2244         1406          904
 ===============================================================================
- Total                  16         2711         2054          176          481
+ Total                  17         2921         2235          172          514
 ===============================================================================
 
 # unsafe

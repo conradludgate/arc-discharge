@@ -1,6 +1,7 @@
 use std::{
     future::Future,
     marker::PhantomData,
+    panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -19,10 +20,35 @@ pin_project_lite::pin_project!(
             fut: F,
         },
         Return {
-            val: Option<F::Output>,
+            val: Result<F::Output, JoinError>,
         },
     }
 );
+
+pub enum JoinError {
+    Aborted,
+    Panic(Box<dyn std::any::Any + Send + 'static>),
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Self::Aborted => write!(fmt, "task was aborted"),
+            Self::Panic(_) => write!(fmt, "task panicked"),
+        }
+    }
+}
+
+impl std::fmt::Debug for JoinError {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Self::Aborted => write!(fmt, "JoinError::Aborted"),
+            Self::Panic(_) => write!(fmt, "JoinError::Panic(...)"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
 
 impl<F: Future> JoinInner<F> {
     pub(crate) fn new(fut: F) -> Self {
@@ -34,11 +60,18 @@ impl<F: Future> Future for JoinInner<F> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let x = match self.as_mut().project() {
-            JoinInnerProj::Future { fut } => std::task::ready!(fut.poll(cx)),
+        let val = match self.as_mut().project() {
+            JoinInnerProj::Future { fut } => {
+                let res = catch_unwind(AssertUnwindSafe(|| fut.poll(cx)));
+                match res {
+                    Ok(Poll::Pending) => return Poll::Pending,
+                    Ok(Poll::Ready(x)) => Ok(x),
+                    Err(panic) => Err(JoinError::Panic(panic)),
+                }
+            }
             JoinInnerProj::Return { .. } => return Poll::Pending,
         };
-        self.set(JoinInner::Return { val: Some(x) });
+        self.set(JoinInner::Return { val });
         Poll::Ready(())
     }
 }
@@ -67,7 +100,7 @@ where
 }
 
 impl<O: 'static> Future for JoinHandle<O> {
-    type Output = O;
+    type Output = Result<O, JoinError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut out = Poll::Pending;
