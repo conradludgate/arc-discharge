@@ -97,6 +97,10 @@ where
         };
         (task2, this)
     }
+
+    pub fn abort(&self) {
+        self.task.cancel()
+    }
 }
 
 impl<O: 'static> Future for JoinHandle<O> {
