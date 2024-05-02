@@ -76,6 +76,17 @@ impl<F: Future> Future for JoinInner<F> {
     }
 }
 
+pub(crate) trait Request {
+    fn push(&mut self, val: &mut dyn std::any::Any);
+}
+
+impl<O: 'static> Request for Poll<Result<O, JoinError>> {
+    fn push(&mut self, val: &mut dyn std::any::Any) {
+        let output = val.downcast_mut().expect("task corrupted");
+        *self = Poll::Ready(std::mem::replace(output, Err(JoinError::Aborted)));
+    }
+}
+
 pub struct JoinHandle<O> {
     task: Arc<dyn DynTask>,
     output: PhantomData<O>,
@@ -108,21 +119,7 @@ impl<O: 'static> Future for JoinHandle<O> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut out = Poll::Pending;
-
-        #[cfg(debug_assertions)]
-        {
-            assert_eq!(self.task.output_type_id(), std::any::TypeId::of::<O>());
-        }
-
-        // a bit annoying we need unsafe here, but we need to type-erase the output.
-        // a simple solution would be to allocate an arc<mutex<_>> and wrap our future
-        // to write the output into that, but I want to avoid that alloc.
-        // this means we are forced to use type erasure
-
-        // SAFETY:
-        // we know the task was created as a `JoinInner<Future<Output = ()>>` as
-        // enforced by the `JoinHandle::new()` function.
-        unsafe { self.task.take_output(&mut out as *mut _ as *mut ()) }
+        self.task.take_output(&mut out);
 
         if out.is_pending() {
             self.task.register(cx.waker());

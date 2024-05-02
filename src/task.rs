@@ -5,14 +5,14 @@ use std::{
         atomic::{AtomicU8, Ordering},
         Arc,
     },
-    task::{Context, Poll, Waker},
+    task::{Context, Waker},
 };
 
 use futures_util::{task::AtomicWaker, Future};
 use parking_lot::Mutex;
 
 use crate::{
-    join_handle::{JoinError, JoinInner},
+    join_handle::{JoinError, JoinInner, Request},
     linked_list::{FatLink, FatLinked},
     sync_slot_map::ReadySlot,
     MTRuntime, WorkerThreadWaker, HANDLE,
@@ -46,11 +46,7 @@ pub(crate) trait DynTask: Send + Sync + 'static {
     fn register(&self, waker: &Waker);
     fn cancel(&self);
 
-    /// # Safety
-    /// the output pointer must point to a valid `Poll<Output>` that is writeable and currently set to `Pending`
-    unsafe fn take_output(&self, output: *mut ());
-    #[cfg(debug_assertions)]
-    fn output_type_id(&self) -> std::any::TypeId;
+    fn take_output(&self, output: &mut dyn Request);
 
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>>;
 }
@@ -105,13 +101,9 @@ where
         Self::schedule_global(&self);
     }
 
-    unsafe fn take_output(&self, output: *mut ()) {
-        let output = output as *mut Poll<Result<F::Output, JoinError>>;
+    fn take_output(&self, output: &mut dyn Request) {
         if let JoinInner::Return { val } = &mut *self.fut.lock() {
-            let val = std::mem::replace(val, Err(JoinError::Aborted));
-
-            // SAFETY: enforced by the caller of this unsafe fn that `output` is `Poll<Output>` and is writeable
-            unsafe { output.write(Poll::Ready(val)) }
+            output.push(&mut *val);
         }
     }
 
@@ -182,11 +174,6 @@ where
             }
             Err(_) => {}
         }
-    }
-
-    #[cfg(debug_assertions)]
-    fn output_type_id(&self) -> std::any::TypeId {
-        std::any::TypeId::of::<F::Output>()
     }
 
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>> {
