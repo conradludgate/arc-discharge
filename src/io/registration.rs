@@ -40,12 +40,15 @@ use super::{Direction, ReadyEvent, ScheduleIoSlot};
 /// [`poll_read_ready`]: method@Self::poll_read_ready`
 /// [`poll_write_ready`]: method@Self::poll_write_ready`
 pub(crate) struct Registration {
-    /// Handle to the associated runtime.
-    handle: Arc<super::Handle>,
-
     /// Reference to state stored by the driver.
     shared: ScheduleIoSlot,
+
+    /// Handle to the associated runtime.
+    handle: Arc<super::Handle>,
 }
+
+unsafe impl Send for Registration {}
+unsafe impl Sync for Registration {}
 
 // ===== impl Registration =====
 
@@ -91,7 +94,7 @@ impl Registration {
     }
 
     pub(crate) fn clear_readiness(&self, event: ReadyEvent) {
-        self.shared.get().clear_readiness(event);
+        self.shared.clear_readiness(event);
     }
 
     // Uses the poll path, requiring the caller to ensure mutual exclusion for
@@ -135,7 +138,7 @@ impl Registration {
         cx: &mut Context<'_>,
         direction: Direction,
     ) -> Poll<io::Result<ReadyEvent>> {
-        let ev = ready!(self.shared.get().poll_readiness(cx, direction));
+        let ev = ready!(self.shared.poll_readiness(cx, direction));
 
         if ev.is_shutdown {
             return Poll::Ready(Err(gone()));
@@ -170,7 +173,7 @@ impl Registration {
         interest: Interest,
         f: impl FnOnce() -> io::Result<R>,
     ) -> io::Result<R> {
-        let ev = self.shared.get().ready_event(interest);
+        let ev = self.shared.ready_event(interest);
 
         // Don't attempt the operation if the resource is not ready.
         if ev.ready.is_empty() {
@@ -196,7 +199,7 @@ impl Registration {
 //         // cycle would remain.
 //         //
 //         // See tokio-rs/tokio#3481 for more details.
-//         self.shared.get().clear_wakers();
+//         self.shared.clear_wakers();
 //     }
 // }
 
@@ -206,7 +209,7 @@ fn gone() -> io::Error {
 
 impl Registration {
     pub(crate) async fn readiness(&self, interest: Interest) -> io::Result<ReadyEvent> {
-        let ev = self.shared.get().readiness(interest).await;
+        let ev = self.shared.readiness(interest).await;
 
         if ev.is_shutdown {
             return Err(gone());
