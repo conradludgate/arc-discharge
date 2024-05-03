@@ -20,8 +20,8 @@ use crate::{
 
 const IDLE: u8 = 0;
 const RUNNING: u8 = 1;
-const COMPLETED: u8 = 1;
-const CANCELLED: u8 = 2;
+const COMPLETED: u8 = 2;
+const CANCELLED: u8 = 3;
 
 /// our Task type that stores the intrusive pointers and our futures
 pub(crate) struct Task<F: Future> {

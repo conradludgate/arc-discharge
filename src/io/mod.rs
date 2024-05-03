@@ -16,12 +16,21 @@ use arrayvec::ArrayVec;
 use pin_list::{id, PinList};
 
 use ready::Ready;
+use sharded_slab::Entry;
 
 use crate::bits;
 
 pub(crate) mod poll_evented;
 pub(crate) mod ready;
 mod registration;
+
+struct SlabConfig;
+impl sharded_slab::Config for SlabConfig {
+    const MAX_THREADS: usize = sharded_slab::DefaultConfig::MAX_THREADS;
+    const MAX_PAGES: usize = sharded_slab::DefaultConfig::MAX_PAGES;
+    const INITIAL_PAGE_SIZE: usize = sharded_slab::DefaultConfig::INITIAL_PAGE_SIZE;
+    const RESERVED_BITS: usize = 8;
+}
 
 pub struct IODriver {
     events: mio::Events,
@@ -31,7 +40,7 @@ pub struct IODriver {
 
 pub(crate) struct Handle {
     registry: mio::Registry,
-    slab: sharded_slab::Slab<ScheduledIo>,
+    slab: sharded_slab::Slab<ScheduledIo, SlabConfig>,
     waker: mio::Waker,
 }
 
@@ -47,7 +56,7 @@ impl IODriver {
         let registry = driver.poll.registry();
         let handle = Handle {
             registry: registry.try_clone().unwrap(),
-            slab: sharded_slab::Slab::new(),
+            slab: sharded_slab::Slab::new_with_config(),
             waker: mio::Waker::new(registry, WAKE_TOKEN).unwrap(),
         };
         (driver, handle)
@@ -84,34 +93,34 @@ impl IODriver {
 }
 
 pub(super) struct ScheduleIoSlot {
-    arc: *const Handle,
-    entry: Option<sharded_slab::Entry<'static, ScheduledIo>>,
-}
-
-impl Drop for ScheduleIoSlot {
-    fn drop(&mut self) {
-        // first drop the entry ref
-        drop(self.entry.take());
-        // then drop the arc.
-        // safe because this pointer came from `into_raw`
-        unsafe { drop(Arc::from_raw(self.arc)) }
-    }
+    // drop order is important here
+    key: usize,
+    arc: Arc<Handle>,
 }
 
 impl ScheduleIoSlot {
     /// Returns the key used to access this guard
     pub fn key(&self) -> usize {
-        self.entry.as_ref().unwrap().key()
+        self.key
     }
 }
 
-impl std::ops::Deref for ScheduleIoSlot {
-    type Target = ScheduledIo;
-
-    fn deref(&self) -> &Self::Target {
-        self.entry.as_deref().unwrap()
+impl ScheduleIoSlot {
+    fn get(&self) -> Entry<'_, ScheduledIo, SlabConfig> {
+        self.arc
+            .slab
+            .get(self.key)
+            .expect("we do not remove the entry while it's occupied")
     }
 }
+
+// impl std::ops::Deref for ScheduleIoSlot {
+//     type Target = ScheduledIo;
+
+//     fn deref(&self) -> &Self::Target {
+//         &*self.arc.slab.get(self.key).unwrap()
+//     }
+// }
 
 impl Handle {
     fn slab_entry(self: Arc<Self>) -> Option<ScheduleIoSlot> {
@@ -124,13 +133,11 @@ impl Handle {
             }),
         })?;
 
-        let mut entry = ScheduleIoSlot {
-            arc: Arc::into_raw(self),
-            entry: None,
+        let entry = ScheduleIoSlot {
+            key: index,
+            arc: self,
         };
 
-        // SAFETY: we keep the arc around long enough to ensure that the entry is valid
-        entry.entry = Some(unsafe { (*entry.arc).slab.get(index) }?);
         Some(entry)
     }
 
@@ -142,15 +149,15 @@ impl Handle {
         source: &mut impl mio::event::Source,
         interest: mio::Interest,
     ) -> std::io::Result<ScheduleIoSlot> {
-        const ADDRESS: bits::Pack = bits::Pack::least_significant(24);
-        const GENERATION: bits::Pack = ADDRESS.then(7);
+        const ADDRESS: bits::Pack =
+            bits::Pack::least_significant(std::mem::size_of::<usize>() as u32 * 8 - 8);
 
         let entry = self
             .clone()
             .slab_entry()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "bruh"))?;
 
-        let token = GENERATION.pack(entry.generation(), ADDRESS.pack(entry.key(), 0));
+        let token = ADDRESS.pack(entry.key(), 0);
 
         self.registry
             .register(source, mio::Token(token), interest)?;
@@ -261,17 +268,15 @@ impl ScheduledIo {
 
 // The `ScheduledIo::readiness` (`AtomicUsize`) is packed full of goodness.
 //
-// | shutdown | generation |  driver tick | readiness |
-// |----------+------------+--------------+-----------|
-// |   1 bit  |   7 bits   +    8 bits    +   16 bits |
+// | shutdown | driver tick | readiness |
+// |----------+-------------+-----------|
+// |   1 bit  +   8 bits    +   16 bits |
 
 const READINESS: bits::Pack = bits::Pack::least_significant(16);
 
 const TICK: bits::Pack = READINESS.then(8);
 
-const GENERATION: bits::Pack = TICK.then(7);
-
-const SHUTDOWN: bits::Pack = GENERATION.then(1);
+const SHUTDOWN: bits::Pack = TICK.then(1);
 
 pin_project_lite::pin_project!(
     /// Future returned by `readiness()`.
@@ -311,10 +316,6 @@ enum Direction {
 }
 
 impl ScheduledIo {
-    pub(crate) fn generation(&self) -> usize {
-        GENERATION.unpack(self.readiness.load(Acquire))
-    }
-
     /// An async version of `poll_readiness` which uses a linked list of wakers.
     pub(crate) async fn readiness(&self, interest: mio::Interest) -> ReadyEvent {
         self.readiness_fut(interest).await
@@ -357,8 +358,6 @@ impl ScheduledIo {
         let mut current = self.readiness.load(Acquire);
 
         loop {
-            let current_generation = GENERATION.unpack(current);
-
             // Mask out the tick/generation bits so that the modifying
             // function doesn't see them.
             let current_readiness = Ready::from_usize(current);
@@ -376,11 +375,9 @@ impl ScheduledIo {
                 }
             };
 
-            let next = GENERATION.pack(current_generation, packed);
-
             match self
                 .readiness
-                .compare_exchange(current, next, AcqRel, Acquire)
+                .compare_exchange(current, packed, AcqRel, Acquire)
             {
                 Ok(_) => return,
                 // we lost the race, retry!
