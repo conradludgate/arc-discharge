@@ -20,109 +20,109 @@ Using [oha](https://github.com/hatoo/oha) to load test a [demo HTTP app](https:/
 
 #### tokio
 
-<details><summary>Requests/sec: 139769.7159</summary>
+<details><summary>Requests/sec: 141882.2455</summary>
 
 ```
 Summary:
   Success rate:	100.00%
-  Total:	14.3093 secs
-  Slowest:	0.0116 secs
+  Total:	70.4810 secs
+  Slowest:	0.0160 secs
   Fastest:	0.0000 secs
   Average:	0.0009 secs
-  Requests/sec:	139769.7159
+  Requests/sec:	141882.2455
 
-  Total data:	51.50 MiB
+  Total data:	257.49 MiB
   Size/request:	27 B
-  Size/sec:	3.60 MiB
+  Size/sec:	3.65 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.001 [1847735] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.002 [148770]  |■■
-  0.003 [2616]    |
-  0.005 [373]     |
-  0.006 [93]      |
-  0.007 [146]     |
-  0.008 [6]       |
-  0.009 [3]       |
-  0.010 [35]      |
-  0.012 [222]     |
+  0.002 [9929609] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.003 [68408]   |
+  0.005 [1192]    |
+  0.006 [225]     |
+  0.008 [44]      |
+  0.010 [44]      |
+  0.011 [228]     |
+  0.013 [211]     |
+  0.014 [37]      |
+  0.016 [1]       |
 
 Response time distribution:
-  10.00% in 0.0007 secs
+  10.00% in 0.0006 secs
   25.00% in 0.0008 secs
   50.00% in 0.0009 secs
   75.00% in 0.0010 secs
-  90.00% in 0.0011 secs
+  90.00% in 0.0012 secs
   95.00% in 0.0013 secs
   99.00% in 0.0016 secs
-  99.90% in 0.0027 secs
-  99.99% in 0.0106 secs
+  99.90% in 0.0020 secs
+  99.99% in 0.0043 secs
 
 
 Details (average, fastest, slowest):
-  DNS+dialup:	0.0030 secs, 0.0024 secs, 0.0043 secs
-  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0007 secs
+  DNS+dialup:	0.0034 secs, 0.0024 secs, 0.0039 secs
+  DNS-lookup:	0.0000 secs, 0.0000 secs, 0.0003 secs
 
 Status code distribution:
-  [200] 2000000 responses
+  [200] 10000000 responses
 ```
 </details>
 
 #### arc-discharge
 
-<details><summary>Requests/sec:	141106.1541</summary>
+<details><summary>Requests/sec:	147177.0598</summary>
 
 ```
 Summary:
   Success rate:	100.00%
-  Total:	14.1737 secs
-  Slowest:	0.0156 secs
+  Total:	67.9454 secs
+  Slowest:	0.0172 secs
   Fastest:	0.0000 secs
   Average:	0.0009 secs
-  Requests/sec:	141106.1541
+  Requests/sec:	147177.0598
 
-  Total data:	51.50 MiB
+  Total data:	257.49 MiB
   Size/request:	27 B
-  Size/sec:	3.63 MiB
+  Size/sec:	3.79 MiB
 
 Response time histogram:
   0.000 [1]       |
-  0.002 [1952169] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-  0.003 [45906]   |
-  0.005 [854]     |
-  0.006 [352]     |
-  0.008 [56]      |
-  0.009 [22]      |
-  0.011 [240]     |
-  0.012 [142]     |
-  0.014 [55]      |
-  0.016 [203]     |
+  0.002 [9900451] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+  0.003 [98033]   |
+  0.005 [772]     |
+  0.007 [321]     |
+  0.009 [29]      |
+  0.010 [49]      |
+  0.012 [16]      |
+  0.014 [96]      |
+  0.015 [94]      |
+  0.017 [138]     |
 
 Response time distribution:
   10.00% in 0.0006 secs
   25.00% in 0.0007 secs
   50.00% in 0.0008 secs
   75.00% in 0.0010 secs
-  90.00% in 0.0013 secs
+  90.00% in 0.0012 secs
   95.00% in 0.0014 secs
-  99.00% in 0.0018 secs
-  99.90% in 0.0031 secs
-  99.99% in 0.0141 secs
+  99.00% in 0.0017 secs
+  99.90% in 0.0023 secs
+  99.99% in 0.0044 secs
 
 
 Details (average, fastest, slowest):
-  DNS+dialup:	0.0034 secs, 0.0025 secs, 0.0058 secs
-  DNS-lookup:	0.0001 secs, 0.0000 secs, 0.0015 secs
+  DNS+dialup:	0.0031 secs, 0.0022 secs, 0.0035 secs
+  DNS-lookup:	0.0000 secs, 0.0000 secs, 0.0003 secs
 
 Status code distribution:
-  [200] 2000000 responses
+  [200] 10000000 responses
 ```
 </details>
 
 #### Results
 
-`arc-discharge` has a 1.0% throughput advantage, but slightly worse tail latencies
+`arc-discharge` has a 3.8% throughput advantage
 
 ### Code complexity
 
