@@ -119,19 +119,9 @@ impl Default for ScheduledIo {
 }
 
 impl Handle {
-    fn slab_entry(&self) -> Option<ScheduleIoSlot> {
-        let entry = self.slab.create()?.downgrade();
-
-        let entry =
-            // SAFETY: the slab (in Arc<Self>) is guaranteed to live longer than the Ref
-            unsafe {
-                std::mem::transmute::<
-                    Ref<'_, ScheduledIo, SlabConfig>,
-                    Ref<'static, ScheduledIo, SlabConfig>,
-                >(entry)
-            };
-
-        Some(entry)
+    fn slab_entry(&self) -> Option<Ref<ScheduledIo, SlabConfig>> {
+        let entry = self.slab.create()?;
+        Some(entry.downgrade())
     }
 
     /// Registers an I/O resource with the reactor for a given `mio::Ready` state.
@@ -141,21 +131,25 @@ impl Handle {
         &self,
         source: &mut impl mio::event::Source,
         interest: mio::Interest,
-    ) -> std::io::Result<ScheduleIoSlot> {
-        const ADDRESS: bits::Pack =
-            bits::Pack::least_significant(std::mem::size_of::<usize>() as u32 * 8 - 8);
+    ) -> std::io::Result<usize> {
+        const ADDRESS: bits::Pack = bits::Pack::least_significant(
+            sharded_slab::Pool::<ScheduledIo, SlabConfig>::USED_BITS as u32,
+        );
         const GENERATION: bits::Pack = ADDRESS.then(7);
 
-        let entry = self
-            .slab_entry()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "bruh"))?;
+        let entry = self.slab_entry().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "could not allocate slot for IO entry",
+            )
+        })?;
 
         let token = GENERATION.pack(entry.generation(), ADDRESS.pack(entry.key(), 0));
 
         self.registry
             .register(source, mio::Token(token), interest)?;
 
-        Ok(entry)
+        Ok(entry.key())
     }
 
     /// Deregisters an I/O resource from the reactor.

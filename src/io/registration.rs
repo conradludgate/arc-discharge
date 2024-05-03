@@ -40,15 +40,12 @@ use super::{Direction, ReadyEvent, ScheduleIoSlot};
 /// [`poll_read_ready`]: method@Self::poll_read_ready`
 /// [`poll_write_ready`]: method@Self::poll_write_ready`
 pub(crate) struct Registration {
-    /// Reference to state stored by the driver.
-    shared: ScheduleIoSlot,
+    /// Index to state stored by the driver.
+    key: usize,
 
     /// Handle to the associated runtime.
     handle: Arc<super::Handle>,
 }
-
-unsafe impl Send for Registration {}
-unsafe impl Sync for Registration {}
 
 // ===== impl Registration =====
 
@@ -68,9 +65,9 @@ impl Registration {
         interest: Interest,
         handle: Arc<super::Handle>,
     ) -> io::Result<Registration> {
-        let shared = handle.add_source(io, interest)?;
+        let key = handle.add_source(io, interest)?;
 
-        Ok(Registration { handle, shared })
+        Ok(Registration { handle, key })
     }
 
     /// Deregisters the I/O resource from the reactor it is associated with.
@@ -94,7 +91,11 @@ impl Registration {
     }
 
     pub(crate) fn clear_readiness(&self, event: ReadyEvent) {
-        self.shared.clear_readiness(event);
+        self.handle
+            .slab
+            .get(self.key)
+            .unwrap()
+            .clear_readiness(event);
     }
 
     // Uses the poll path, requiring the caller to ensure mutual exclusion for
@@ -138,7 +139,12 @@ impl Registration {
         cx: &mut Context<'_>,
         direction: Direction,
     ) -> Poll<io::Result<ReadyEvent>> {
-        let ev = ready!(self.shared.poll_readiness(cx, direction));
+        let ev = ready!(self
+            .handle
+            .slab
+            .get(self.key)
+            .unwrap()
+            .poll_readiness(cx, direction));
 
         if ev.is_shutdown {
             return Poll::Ready(Err(gone()));
@@ -173,7 +179,12 @@ impl Registration {
         interest: Interest,
         f: impl FnOnce() -> io::Result<R>,
     ) -> io::Result<R> {
-        let ev = self.shared.ready_event(interest);
+        let ev = self
+            .handle
+            .slab
+            .get(self.key)
+            .unwrap()
+            .ready_event(interest);
 
         // Don't attempt the operation if the resource is not ready.
         if ev.ready.is_empty() {
@@ -192,7 +203,7 @@ impl Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.handle.slab.clear(self.shared.key());
+        self.handle.slab.clear(self.key);
 
         // // It is possible for a cycle to be created between wakers stored in
         // // `ScheduledIo` instances and `Arc<driver::Inner>`. To break this
@@ -211,7 +222,13 @@ fn gone() -> io::Error {
 
 impl Registration {
     pub(crate) async fn readiness(&self, interest: Interest) -> io::Result<ReadyEvent> {
-        let ev = self.shared.readiness(interest).await;
+        let ev = self
+            .handle
+            .slab
+            .get(self.key)
+            .unwrap()
+            .readiness(interest)
+            .await;
 
         if ev.is_shutdown {
             return Err(gone());
