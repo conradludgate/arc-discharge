@@ -1,7 +1,7 @@
 #![feature(arbitrary_self_types)]
 #![feature(exclusive_wrapper)]
 
-use intrusive_collections::XorLinkedList;
+use intrusive_collections::LinkedList;
 use linked_list::TaskAdapter;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -26,7 +26,7 @@ mod task;
 
 /// Multithreaded runtime
 pub struct MTRuntime {
-    global_queue: Mutex<XorLinkedList<TaskAdapter>>,
+    global_queue: Mutex<LinkedList<TaskAdapter>>,
     workers: OnceLock<Box<[Worker]>>,
     parked_workers: SyncSlotMap,
     io_handle: Arc<io::Handle>,
@@ -46,7 +46,7 @@ impl MTRuntime {
     pub fn new(n: NonZeroUsize) -> Arc<Self> {
         let (driver, handle) = io::IODriver::new();
         let shared = Arc::new(MTRuntime {
-            global_queue: Mutex::new(XorLinkedList::new(TaskAdapter::new())),
+            global_queue: Mutex::new(LinkedList::new(TaskAdapter::new())),
             workers: OnceLock::new(),
             parked_workers: SyncSlotMap::new(n.get()),
             io_handle: Arc::new(handle),

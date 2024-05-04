@@ -7,32 +7,33 @@ use std::{
 
 use futures_util::Future;
 use intrusive_collections::{
-    xor_linked_list::XorLinkedListOps, DefaultLinkOps, DefaultPointerOps, XorLinkedListAtomicLink,
+    linked_list::{AtomicLink, LinkedListOps},
+    DefaultLinkOps, DefaultPointerOps,
 };
 
 use crate::task::{DynTask, Task};
 
 pub(crate) struct FatLink<D: ?Sized> {
-    link: XorLinkedListAtomicLink,
+    link: AtomicLink,
     get_value: unsafe fn(link: NonNull<FatLink<D>>) -> *const D,
 }
 
 impl<D: ?Sized> FatLink<D> {
     pub(crate) const fn new<L: FatLinked<D>>() -> Self {
         FatLink {
-            link: XorLinkedListAtomicLink::new(),
+            link: AtomicLink::new(),
             get_value: L::get_value,
         }
     }
 
     #[inline]
-    fn to_link(ptr: NonNull<Self>) -> NonNull<XorLinkedListAtomicLink> {
+    fn to_link(ptr: NonNull<Self>) -> NonNull<AtomicLink> {
         let offset = offset_of!(FatLink::<D>, link);
         unsafe { NonNull::new_unchecked(ptr.as_ptr().byte_add(offset).cast()) }
     }
 
     #[inline]
-    fn from_link(link: NonNull<XorLinkedListAtomicLink>) -> NonNull<Self> {
+    fn from_link(link: NonNull<AtomicLink>) -> NonNull<Self> {
         let offset = offset_of!(FatLink::<D>, link);
         unsafe { NonNull::new_unchecked(link.as_ptr().byte_sub(offset).cast()) }
     }
@@ -42,13 +43,13 @@ impl<D: ?Sized> DefaultLinkOps for FatLink<D> {
     type Ops = FatLinkOps<D>;
 
     const NEW: Self::Ops = FatLinkOps {
-        ops: <XorLinkedListAtomicLink as intrusive_collections::DefaultLinkOps>::NEW,
+        ops: <AtomicLink as intrusive_collections::DefaultLinkOps>::NEW,
         d: PhantomData,
     };
 }
 
 pub(crate) struct FatLinkOps<D: ?Sized> {
-    ops: intrusive_collections::xor_linked_list::AtomicLinkOps,
+    ops: intrusive_collections::linked_list::AtomicLinkOps,
     d: PhantomData<D>,
 }
 
@@ -79,55 +80,25 @@ unsafe impl<D: ?Sized> intrusive_collections::LinkOps for FatLinkOps<D> {
     }
 }
 
-unsafe impl<D: ?Sized> XorLinkedListOps for FatLinkOps<D> {
+unsafe impl<D: ?Sized> LinkedListOps for FatLinkOps<D> {
     #[inline]
-    unsafe fn next(
-        &self,
-        ptr: Self::LinkPtr,
-        prev: Option<Self::LinkPtr>,
-    ) -> Option<Self::LinkPtr> {
+    unsafe fn next(&self, ptr: Self::LinkPtr) -> Option<Self::LinkPtr> {
+        self.ops.next(FatLink::to_link(ptr)).map(FatLink::from_link)
+    }
+
+    #[inline]
+    unsafe fn prev(&self, ptr: Self::LinkPtr) -> Option<Self::LinkPtr> {
+        self.ops.prev(FatLink::to_link(ptr)).map(FatLink::from_link)
+    }
+
+    unsafe fn set_next(&mut self, ptr: Self::LinkPtr, next: Option<Self::LinkPtr>) {
         self.ops
-            .next(FatLink::to_link(ptr), prev.map(FatLink::to_link))
-            .map(FatLink::from_link)
+            .set_next(FatLink::to_link(ptr), next.map(FatLink::to_link))
     }
 
-    #[inline]
-    unsafe fn prev(
-        &self,
-        ptr: Self::LinkPtr,
-        next: Option<Self::LinkPtr>,
-    ) -> Option<Self::LinkPtr> {
+    unsafe fn set_prev(&mut self, ptr: Self::LinkPtr, prev: Option<Self::LinkPtr>) {
         self.ops
-            .prev(FatLink::to_link(ptr), next.map(FatLink::to_link))
-            .map(FatLink::from_link)
-    }
-
-    #[inline]
-    unsafe fn set(
-        &mut self,
-        ptr: Self::LinkPtr,
-        prev: Option<Self::LinkPtr>,
-        next: Option<Self::LinkPtr>,
-    ) {
-        self.ops.set(
-            FatLink::to_link(ptr),
-            prev.map(FatLink::to_link),
-            next.map(FatLink::to_link),
-        )
-    }
-
-    #[inline]
-    unsafe fn replace_next_or_prev(
-        &mut self,
-        ptr: Self::LinkPtr,
-        old: Option<Self::LinkPtr>,
-        new: Option<Self::LinkPtr>,
-    ) {
-        self.ops.replace_next_or_prev(
-            FatLink::to_link(ptr),
-            old.map(FatLink::to_link),
-            new.map(FatLink::to_link),
-        )
+            .set_prev(FatLink::to_link(ptr), prev.map(FatLink::to_link))
     }
 }
 
@@ -209,9 +180,12 @@ where
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc, task::Poll};
 
-    use intrusive_collections::XorLinkedList;
+    use intrusive_collections::LinkedList;
 
-    use crate::{task::{DynTask, Task}, JoinError, MTRuntime};
+    use crate::{
+        task::{DynTask, Task},
+        JoinError, MTRuntime,
+    };
 
     use super::TaskAdapter;
 
@@ -227,11 +201,13 @@ mod tests {
     #[test]
     fn list() {
         let handle = MTRuntime::new(NonZeroUsize::new(1).unwrap());
-        let mut list = XorLinkedList::new(TaskAdapter::new());
+        let mut list = LinkedList::new(TaskAdapter::new());
         list.push_back(Arc::new(Task::new(handle.clone(), async { 1 })) as Arc<_>);
         list.push_back(Arc::new(Task::new(handle.clone(), async { 2 })) as Arc<_>);
         list.push_back(Arc::new(Task::new(handle.clone(), async { 3 })) as Arc<_>);
-        list.push_back(Arc::new(Task::new(handle.clone(), async { String::from("four") })) as Arc<_>);
+        list.push_back(
+            Arc::new(Task::new(handle.clone(), async { String::from("four") })) as Arc<_>,
+        );
 
         list.pop_front().unwrap().check(1);
         list.pop_front().unwrap().check(2);
