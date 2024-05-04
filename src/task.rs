@@ -56,11 +56,12 @@ where
     F::Output: Send + 'static,
 {
     fn schedule_global(this: &Arc<Self>) {
-        this.handle
-            .global_queue
-            .lock()
-            .unwrap()
-            .push_back(this.clone());
+        {
+            let mut queue = this.handle.global_queue.lock().unwrap();
+            if !this.link.is_linked() {
+                queue.push_back(this.clone());
+            }
+        }
 
         // if we push to the global queue, we should try wake up a worker to process it
         // if it's already locked, then we know another worker is already being woken up.

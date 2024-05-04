@@ -26,6 +26,12 @@ impl<D: ?Sized> FatLink<D> {
         }
     }
 
+    /// Checks whether the `AtomicLink` is linked into a `LinkedList`.
+    #[inline]
+    pub fn is_linked(&self) -> bool {
+        self.link.is_linked()
+    }
+
     #[inline]
     fn to_link(ptr: NonNull<Self>) -> NonNull<AtomicLink> {
         let offset = offset_of!(FatLink::<D>, link);
