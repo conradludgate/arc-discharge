@@ -1,4 +1,5 @@
 #![feature(arbitrary_self_types)]
+#![feature(exclusive_wrapper)]
 
 use intrusive_collections::XorLinkedList;
 use linked_list::TaskAdapter;

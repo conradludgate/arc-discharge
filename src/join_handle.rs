@@ -3,7 +3,7 @@ use std::{
     marker::PhantomData,
     panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Exclusive},
     task::{Context, Poll},
 };
 
@@ -27,7 +27,7 @@ pin_project_lite::pin_project!(
 
 pub enum JoinError {
     Aborted,
-    Panic(Box<dyn std::any::Any + Send + 'static>),
+    Panic(Exclusive<Box<dyn std::any::Any + Send + 'static>>),
 }
 
 impl std::fmt::Display for JoinError {
@@ -66,7 +66,7 @@ impl<F: Future> Future for JoinInner<F> {
                 match res {
                     Ok(Poll::Pending) => return Poll::Pending,
                     Ok(Poll::Ready(x)) => Ok(x),
-                    Err(panic) => Err(JoinError::Panic(panic)),
+                    Err(panic) => Err(JoinError::Panic(Exclusive::new(panic))),
                 }
             }
             JoinInnerProj::Return { .. } => return Poll::Pending,

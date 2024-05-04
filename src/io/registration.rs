@@ -222,13 +222,14 @@ fn gone() -> io::Error {
 
 impl Registration {
     pub(crate) async fn readiness(&self, interest: Interest) -> io::Result<ReadyEvent> {
-        let ev = self
-            .handle
-            .slab
-            .get(self.key)
-            .unwrap()
-            .readiness(interest)
-            .await;
+        let ev = super::Readiness {
+            handle: &*self.handle,
+            key: self.key,
+            state: super::State::Init,
+            interest,
+            waiter: pin_list::Node::new(),
+        }
+        .await;
 
         if ev.is_shutdown {
             return Err(gone());

@@ -268,7 +268,8 @@ const SHUTDOWN: bits::Pack = GENERATION.then(1);
 pin_project_lite::pin_project!(
     /// Future returned by `readiness()`.
     struct Readiness<'a> {
-        scheduled_io: &'a ScheduledIo,
+        key: usize,
+        handle: &'a Handle,
 
         state: State,
 
@@ -305,20 +306,6 @@ enum Direction {
 impl ScheduledIo {
     pub(crate) fn generation(&self) -> usize {
         GENERATION.unpack(self.readiness.load(Acquire))
-    }
-
-    /// An async version of `poll_readiness` which uses a linked list of wakers.
-    pub(crate) async fn readiness(&self, interest: mio::Interest) -> ReadyEvent {
-        self.readiness_fut(interest).await
-    }
-
-    fn readiness_fut(&self, interest: mio::Interest) -> Readiness<'_> {
-        Readiness {
-            scheduled_io: self,
-            state: State::Init,
-            interest,
-            waiter: pin_list::Node::new(),
-        }
     }
 
     pub(crate) fn clear_readiness(&self, event: ReadyEvent) {
@@ -459,12 +446,13 @@ impl Future for Readiness<'_> {
         use std::sync::atomic::Ordering::SeqCst;
 
         let mut this = self.project();
+        let scheduled_io = this.handle.slab.get(*this.key).unwrap();
 
         loop {
             match *this.state {
                 State::Init => {
                     // Optimistically check existing readiness
-                    let curr = this.scheduled_io.readiness.load(SeqCst);
+                    let curr = scheduled_io.readiness.load(SeqCst);
                     let ready = Ready::from_usize(READINESS.unpack(curr));
                     let is_shutdown = SHUTDOWN.unpack(curr) != 0;
 
@@ -483,9 +471,9 @@ impl Future for Readiness<'_> {
                     }
 
                     // Wasn't ready, take the lock (and check again while locked).
-                    let mut waiters = this.scheduled_io.waiters.lock().unwrap();
+                    let mut waiters = scheduled_io.waiters.lock().unwrap();
 
-                    let curr = this.scheduled_io.readiness.load(SeqCst);
+                    let curr = scheduled_io.readiness.load(SeqCst);
                     let mut ready = Ready::from_usize(READINESS.unpack(curr));
                     let is_shutdown = SHUTDOWN.unpack(curr) != 0;
 
@@ -517,7 +505,7 @@ impl Future for Readiness<'_> {
                     // `notify.waiters`). In order to access the waker fields,
                     // we must hold the lock.
 
-                    let mut waiters = this.scheduled_io.waiters.lock().unwrap();
+                    let mut waiters = scheduled_io.waiters.lock().unwrap();
 
                     if let Some(init) = this.waiter.as_mut().initialized_mut() {
                         if let Some(waker) = init.protected_mut(&mut waiters.list) {
@@ -534,7 +522,7 @@ impl Future for Readiness<'_> {
                     *this.state = State::Done;
                 }
                 State::Done => {
-                    let curr = this.scheduled_io.readiness.load(Acquire);
+                    let curr = scheduled_io.readiness.load(Acquire);
                     let is_shutdown = SHUTDOWN.unpack(curr) != 0;
 
                     // The returned tick might be newer than the event
