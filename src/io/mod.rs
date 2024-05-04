@@ -92,8 +92,6 @@ impl IODriver {
     }
 }
 
-type ScheduleIoSlot = Ref<'static, ScheduledIo, SlabConfig>;
-
 impl Clear for ScheduledIo {
     fn clear(&mut self) {
         let state = *self.readiness.get_mut();

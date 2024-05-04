@@ -76,17 +76,6 @@ impl<F: Future> Future for JoinInner<F> {
     }
 }
 
-pub(crate) trait Request {
-    fn push(&mut self, val: &mut dyn std::any::Any);
-}
-
-impl<O: 'static> Request for Poll<Result<O, JoinError>> {
-    fn push(&mut self, val: &mut dyn std::any::Any) {
-        let output = val.downcast_mut().expect("task corrupted");
-        *self = Poll::Ready(std::mem::replace(output, Err(JoinError::Aborted)));
-    }
-}
-
 pub struct JoinHandle<O> {
     task: Arc<dyn DynTask>,
     output: PhantomData<O>,

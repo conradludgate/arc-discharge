@@ -12,7 +12,7 @@ use futures_util::{task::AtomicWaker, Future};
 use parking_lot::Mutex;
 
 use crate::{
-    join_handle::{JoinError, JoinInner, Request},
+    join_handle::{JoinError, JoinInner},
     linked_list::{FatLink, FatLinked},
     sync_slot_map::ReadySlot,
     MTRuntime, WorkerThreadWaker, HANDLE,
@@ -46,7 +46,7 @@ pub(crate) trait DynTask: Send + Sync + 'static {
     fn register(&self, waker: &Waker);
     fn cancel(&self);
 
-    fn take_output(&self, output: &mut dyn Request);
+    fn take_output(&self, output: &mut dyn std::any::Any);
 
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>>;
 }
@@ -101,9 +101,10 @@ where
         Self::schedule_global(&self);
     }
 
-    fn take_output(&self, output: &mut dyn Request) {
+    fn take_output(&self, output: &mut dyn std::any::Any) {
         if let JoinInner::Return { val } = &mut *self.fut.lock() {
-            output.push(&mut *val);
+            let val = std::mem::replace(val, Err(JoinError::Aborted));
+            *output.downcast_mut().unwrap() = std::task::Poll::Ready(val);
         }
     }
 
