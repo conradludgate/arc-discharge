@@ -172,7 +172,7 @@ where
 
     unsafe fn get_value(ptr: NonNull<FatLink<dyn DynTask>>) -> *const dyn DynTask {
         let offset = offset_of!(Task::<F>, link);
-        ptr.as_ptr().sub(offset).cast::<Task<F>>().cast_const() as _
+        ptr.as_ptr().byte_sub(offset).cast::<Task<F>>().cast_const() as _
     }
 }
 
