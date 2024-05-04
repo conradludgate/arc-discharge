@@ -204,3 +204,38 @@ where
         ptr.as_ptr().sub(offset).cast::<Task<F>>().cast_const() as _
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{num::NonZeroUsize, sync::Arc, task::Poll};
+
+    use intrusive_collections::XorLinkedList;
+
+    use crate::{task::{DynTask, Task}, JoinError, MTRuntime};
+
+    use super::TaskAdapter;
+
+    impl dyn DynTask {
+        fn check<T: PartialEq + 'static>(self: Arc<Self>, t: T) {
+            self.clone().run();
+            let mut output = Poll::<Result<T, JoinError>>::Pending;
+            self.take_output(&mut output);
+            assert!(matches!(output, Poll::Ready(Ok(u)) if t == u))
+        }
+    }
+
+    #[test]
+    fn list() {
+        let handle = MTRuntime::new(NonZeroUsize::new(1).unwrap());
+        let mut list = XorLinkedList::new(TaskAdapter::new());
+        list.push_back(Arc::new(Task::new(handle.clone(), async { 1 })) as Arc<_>);
+        list.push_back(Arc::new(Task::new(handle.clone(), async { 2 })) as Arc<_>);
+        list.push_back(Arc::new(Task::new(handle.clone(), async { 3 })) as Arc<_>);
+        list.push_back(Arc::new(Task::new(handle.clone(), async { String::from("four") })) as Arc<_>);
+
+        list.pop_front().unwrap().check(1);
+        list.pop_front().unwrap().check(2);
+        list.pop_front().unwrap().check(3);
+        list.pop_front().unwrap().check(String::from("four"));
+    }
+}

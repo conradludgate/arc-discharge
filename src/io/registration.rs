@@ -223,7 +223,7 @@ fn gone() -> io::Error {
 impl Registration {
     pub(crate) async fn readiness(&self, interest: Interest) -> io::Result<ReadyEvent> {
         let ev = super::Readiness {
-            handle: &*self.handle,
+            handle: &self.handle,
             key: self.key,
             state: super::State::Init,
             interest,
