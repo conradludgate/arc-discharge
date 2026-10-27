@@ -98,8 +98,10 @@ where
         (task2, this)
     }
 
+    /// Requests cancellation, which the runtime processes asynchronously.
+    /// A task that has already completed keeps its result.
     pub fn abort(&self) {
-        self.task.cancel()
+        self.task.clone().cancel()
     }
 }
 
