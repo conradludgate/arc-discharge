@@ -46,7 +46,7 @@ pub(crate) trait DynTask: Send + Sync + 'static {
     fn run(self: Arc<Self>);
 
     fn register(&self, waker: &Waker);
-    fn cancel(&self);
+    fn cancel(self: Arc<Self>);
 
     fn take_output(&self, output: &mut dyn std::any::Any);
 
@@ -94,6 +94,20 @@ where
             }
         }
     }
+    fn finish_cancellation(&self) {
+        {
+            // A current poll may still own the future. Do not discard the
+            // cancellation notification just because the mutex is busy.
+            let mut fut = self.fut.lock();
+            if matches!(*fut, JoinInner::Future { .. }) {
+                *fut = JoinInner::Return {
+                    val: Err(JoinError::Aborted),
+                };
+            }
+            self.state.store(COMPLETED, Ordering::Release);
+        }
+        self.waker.wake();
+    }
 }
 
 impl<F: Future + Send + 'static> DynTask for Task<F>
@@ -115,19 +129,17 @@ where
         self.waker.register(waker)
     }
 
-    fn cancel(&self) {
-        if let Some(mut fut) = self.fut.try_lock() {
-            if let JoinInner::Future { .. } = *fut {
-                *fut = JoinInner::Return {
-                    val: Err(JoinError::Aborted),
-                }
-            }
-        } else {
-            let _ = self
-                .state
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                    matches!(state, RUNNING | NOTIFIED).then_some(CANCELLED)
-                });
+    fn cancel(self: Arc<Self>) {
+        if self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                COMPLETED | CANCELLED => None,
+                _ => Some(CANCELLED),
+            })
+            .is_ok()
+        {
+            // Idle tasks also need a worker to publish Aborted and wake the joiner.
+            Self::schedule_global(&self);
         }
     }
 
@@ -164,13 +176,7 @@ where
                             }) {
                             Ok(NOTIFIED) => Self::schedule_global(&self),
                             Err(CANCELLED) => {
-                                // Cancellation won the race with returning to IDLE.
-                                let mut fut = self.fut.lock();
-                                if matches!(*fut, JoinInner::Future { .. }) {
-                                    *fut = JoinInner::Return {
-                                        val: Err(JoinError::Aborted),
-                                    };
-                                }
+                                self.finish_cancellation();
                             }
                             _ => {}
                         }
@@ -178,15 +184,7 @@ where
                 }
             }
             Err(CANCELLED) => {
-                // if it's locked, then it's already being polled or complete. we don't care
-                if let Some(mut fut) = self.fut.try_lock() {
-                    if matches!(*fut, JoinInner::Future { .. }) {
-                        *fut = JoinInner::Return {
-                            val: Err(JoinError::Aborted),
-                        };
-                    }
-                    self.waker.wake()
-                }
+                self.finish_cancellation();
             }
             // Ok(RUNNING) recorded the notification; leave the current poll
             // owner responsible for requeueing it if the future stays pending.

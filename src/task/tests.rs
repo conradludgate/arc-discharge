@@ -1,5 +1,10 @@
 use super::*;
-use std::{num::NonZeroUsize, sync::mpsc, task::Poll, time::Duration};
+use std::{
+    num::NonZeroUsize,
+    sync::{atomic::AtomicUsize, mpsc},
+    task::{Poll, Wake},
+    time::Duration,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -88,12 +93,20 @@ fn self_wakes_and_cross_worker_notifications_make_progress() {
     }
 }
 
+struct Notify(mpsc::Sender<()>);
+impl Wake for Notify {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send(());
+    }
+}
+
 #[test]
-fn cancellation_accepts_the_notified_state() {
+fn cancellation_during_a_notified_poll_wakes_the_joiner() {
     let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let (done_tx, _done_rx) = mpsc::channel();
+    let (join_tx, join_rx) = mpsc::channel();
     let task = Arc::new(Task::new(
         runtime.clone(),
         PausedPoll {
@@ -102,6 +115,7 @@ fn cancellation_accepts_the_notified_state() {
             completed: done_tx,
         },
     ));
+    task.register(&Waker::from(Arc::new(Notify(join_tx))));
     let running = task.clone();
     let thread = std::thread::spawn(move || running.run());
     entered_rx.recv_timeout(TIMEOUT).unwrap().wake();
@@ -109,10 +123,55 @@ fn cancellation_accepts_the_notified_state() {
     task.clone().cancel();
     release_tx.send(()).unwrap();
     thread.join().unwrap();
+    join_rx
+        .recv_timeout(TIMEOUT)
+        .expect("cancelled joiner was not woken");
+    let mut result = Poll::<Result<(), JoinError>>::Pending;
+    task.take_output(&mut result);
+    assert!(matches!(result, Poll::Ready(Err(JoinError::Aborted))));
+}
+
+#[test]
+fn cancellation_before_polling_wakes_the_joiner() {
+    let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
+    let (_task, mut join) =
+        crate::JoinHandle::new(Task::new(runtime, std::future::pending::<()>()));
+    let (tx, rx) = mpsc::channel();
+    let waker = Waker::from(Arc::new(Notify(tx)));
+    let mut cx = Context::from_waker(&waker);
+    assert!(Pin::new(&mut join).poll(&mut cx).is_pending());
+    join.abort();
+    rx.recv_timeout(TIMEOUT)
+        .expect("cancelled joiner was not woken");
     assert!(matches!(
-        *task.fut.lock(),
-        JoinInner::Return {
-            val: Err(JoinError::Aborted)
-        }
+        Pin::new(&mut join).poll(&mut cx),
+        Poll::Ready(Err(JoinError::Aborted))
     ));
+}
+
+#[test]
+fn completed_tasks_ignore_retained_wakes_and_cancellation() {
+    let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
+    let polls = Arc::new(AtomicUsize::new(0));
+    let polled = polls.clone();
+    let (tx, rx) = mpsc::channel();
+    let task = Arc::new(Task::new(
+        runtime.clone(),
+        std::future::poll_fn(move |cx| {
+            polled.fetch_add(1, Ordering::Relaxed);
+            tx.send(cx.waker().clone()).unwrap();
+            Poll::Ready(7)
+        }),
+    ));
+    task.clone().run();
+    let waker = rx.recv_timeout(TIMEOUT).unwrap();
+    for _ in 0..16 {
+        waker.wake_by_ref();
+    }
+    task.clone().cancel();
+    worker_barrier(&runtime);
+    assert_eq!(polls.load(Ordering::Relaxed), 1);
+    let mut result = Poll::<Result<i32, JoinError>>::Pending;
+    task.take_output(&mut result);
+    assert!(matches!(result, Poll::Ready(Ok(7))));
 }
