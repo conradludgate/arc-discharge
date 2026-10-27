@@ -22,6 +22,8 @@ const IDLE: u8 = 0;
 const RUNNING: u8 = 1;
 const COMPLETED: u8 = 2;
 const CANCELLED: u8 = 3;
+// A notification was consumed by another worker during the current poll.
+const NOTIFIED: u8 = 4;
 
 /// our Task type that stores the intrusive pointers and our futures
 pub(crate) struct Task<F: Future> {
@@ -121,15 +123,11 @@ where
                 }
             }
         } else {
-            match self.state.compare_exchange(
-                RUNNING,
-                CANCELLED,
-                Ordering::Acquire,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {}
-                Err(_) => todo!(),
-            }
+            let _ = self
+                .state
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                    matches!(state, RUNNING | NOTIFIED).then_some(CANCELLED)
+                });
         }
     }
 
@@ -139,27 +137,43 @@ where
 
         match self
             .state
-            .compare_exchange(IDLE, RUNNING, Ordering::Acquire, Ordering::Acquire)
-        {
-            Ok(_) => {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                IDLE => Some(RUNNING),
+                RUNNING => Some(NOTIFIED),
+                _ => None,
+            }) {
+            Ok(IDLE) => {
                 // if it's locked, then it's already being polled or complete. we don't care
                 if let Some(mut fut) = self.fut.try_lock() {
                     // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
                     // is always pinned and never moved until the Arc deallocates.
-                    let mut fut = unsafe { Pin::new_unchecked(&mut *fut) };
-
-                    if fut.as_mut().poll(&mut cx).is_ready() {
+                    let ready = unsafe { Pin::new_unchecked(&mut *fut) }
+                        .poll(&mut cx)
+                        .is_ready();
+                    if ready {
                         self.state.store(COMPLETED, Ordering::Release);
                         self.waker.wake()
-                    } else if let Err(CANCELLED) = self.state.compare_exchange(
-                        RUNNING,
-                        IDLE,
-                        Ordering::Acquire,
-                        Ordering::Acquire,
-                    ) {
-                        fut.set(JoinInner::Return {
-                            val: Err(JoinError::Aborted),
-                        });
+                    } else {
+                        // Unlock before publishing IDLE: the next worker must
+                        // be able to acquire the future when it takes the task.
+                        drop(fut);
+                        match self
+                            .state
+                            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                                matches!(state, RUNNING | NOTIFIED).then_some(IDLE)
+                            }) {
+                            Ok(NOTIFIED) => Self::schedule_global(&self),
+                            Err(CANCELLED) => {
+                                // Cancellation won the race with returning to IDLE.
+                                let mut fut = self.fut.lock();
+                                if matches!(*fut, JoinInner::Future { .. }) {
+                                    *fut = JoinInner::Return {
+                                        val: Err(JoinError::Aborted),
+                                    };
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -174,7 +188,9 @@ where
                     self.waker.wake()
                 }
             }
-            Err(_) => {}
+            // Ok(RUNNING) recorded the notification; leave the current poll
+            // owner responsible for requeueing it if the future stays pending.
+            _ => {}
         }
     }
 
@@ -182,6 +198,9 @@ where
         <Self as FatLinked<dyn DynTask>>::get_link(self)
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl<F: Future + Send + 'static> Task<F>
 where
