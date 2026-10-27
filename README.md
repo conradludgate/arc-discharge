@@ -12,6 +12,12 @@ This requires nightly APIs, is not well tested, and not recommended for producti
 The main purpose is to have similar performance characteristics to tokio with a much simpler code base for learning purposes.
 It is not ensured to be satisfactory for soft real time systems.
 
+## Development
+
+The supported toolchain is `nightly-2026-10-24`, pinned in `rust-toolchain.toml`.
+Run `cargo test --lib` to check the runtime and intrusive-list regressions, and
+`cargo check --all-targets` to check the examples as well.
+
 ## Benchmarks
 
 ### HTTP

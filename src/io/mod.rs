@@ -117,7 +117,7 @@ impl Default for ScheduledIo {
 }
 
 impl Handle {
-    fn slab_entry(&self) -> Option<Ref<ScheduledIo, SlabConfig>> {
+    fn slab_entry(&self) -> Option<Ref<'_, ScheduledIo, SlabConfig>> {
         let entry = self.slab.create()?;
         Some(entry.downgrade())
     }

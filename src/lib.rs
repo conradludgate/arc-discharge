@@ -1,5 +1,5 @@
 #![feature(arbitrary_self_types)]
-#![feature(exclusive_wrapper)]
+#![feature(arbitrary_self_types_pointers)]
 
 use intrusive_collections::LinkedList;
 use linked_list::TaskAdapter;
