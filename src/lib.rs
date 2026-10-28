@@ -12,7 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::task::{Context, Wake, Waker};
 use std::thread::{self, available_parallelism, Thread};
 use sync_slot_map::SyncSlotMap;
-use task::{DynTask, Task};
+use task::DynTask;
 
 pub use join_handle::{JoinError, JoinHandle};
 
@@ -148,8 +148,7 @@ impl MTRuntime {
     where
         F::Output: Send + 'static,
     {
-        let task = Task::new(self.clone(), f);
-        let (task, join) = JoinHandle::new(task);
+        let (task, join) = JoinHandle::new(self.clone(), f);
 
         HANDLE.with(|x| {
             if let Some(local) = x
@@ -182,8 +181,7 @@ impl ExecutorHandle {
     where
         F::Output: Send + 'static,
     {
-        let task = Task::new(self.shared.clone(), f);
-        let (task, join) = JoinHandle::new(task);
+        let (task, join) = JoinHandle::new(self.shared.clone(), f);
 
         self.schedule_local(task);
 
