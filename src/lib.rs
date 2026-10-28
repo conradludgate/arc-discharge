@@ -109,11 +109,22 @@ impl MTRuntime {
             shared: self.clone(),
             local_queue: RefCell::new(VecDeque::with_capacity(0)),
         });
-        if HANDLE.with(|x| x.borrow_mut().replace(fake_exec)).is_some() {
-            panic!(
+        HANDLE.with(|x| {
+            let mut current = x.borrow_mut();
+            assert!(
+                current.is_none(),
                 "block on called within the context of another runtime. this is most likely a bug"
             );
+            *current = Some(fake_exec);
+        });
+
+        struct ResetHandle;
+        impl Drop for ResetHandle {
+            fn drop(&mut self) {
+                HANDLE.with(|x| x.borrow_mut().take());
+            }
         }
+        let _reset = ResetHandle;
 
         struct ThreadWaker {
             thread: Thread,
@@ -276,6 +287,44 @@ mod tests {
     use futures_util::Future;
 
     use crate::{spawn, MTRuntime};
+
+    #[test]
+    fn block_on_context_is_cleared_after_return() {
+        let runtime = MTRuntime::new(std::num::NonZeroUsize::new(1).unwrap());
+        assert_eq!(runtime.block_on(async { 1 }), 1);
+        assert!(crate::HANDLE.with(|slot| slot.borrow().is_none()));
+        assert_eq!(
+            runtime.block_on(async { spawn(async { 2 }).await.unwrap() }),
+            2
+        );
+    }
+
+    #[test]
+    fn block_on_context_is_cleared_after_panic() {
+        let runtime = MTRuntime::new(std::num::NonZeroUsize::new(1).unwrap());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async { panic!("future panicked") });
+        }));
+        assert!(result.is_err());
+        assert!(crate::HANDLE.with(|slot| slot.borrow().is_none()));
+        assert_eq!(runtime.block_on(async { 3 }), 3);
+    }
+
+    #[test]
+    fn block_on_rejection_preserves_the_outer_context() {
+        let outer = MTRuntime::new(std::num::NonZeroUsize::new(1).unwrap());
+        let inner = MTRuntime::new(std::num::NonZeroUsize::new(1).unwrap());
+        outer.block_on(async {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                inner.block_on(async {});
+            }));
+            assert!(result.is_err());
+            assert!(crate::HANDLE
+                .with(|slot| { Arc::ptr_eq(&slot.borrow().as_ref().unwrap().shared, &outer) }));
+            assert_eq!(spawn(async { 4 }).await.unwrap(), 4);
+        });
+        assert!(crate::HANDLE.with(|slot| slot.borrow().is_none()));
+    }
 
     #[test]
     fn timers() {
