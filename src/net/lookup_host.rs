@@ -16,12 +16,11 @@ use std::net::SocketAddr;
 /// To resolve a DNS entry:
 ///
 /// ```no_run
-/// use tokio::net;
+/// use arc_discharge::net;
 /// use std::io;
 ///
-/// #[tokio::main]
-/// async fn main() -> io::Result<()> {
-///     for addr in net::lookup_host("localhost:3000").await? {
+/// fn main() -> io::Result<()> {
+///     for addr in net::lookup_host("localhost:3000")? {
 ///         println!("socket address is {}", addr);
 ///     }
 ///
