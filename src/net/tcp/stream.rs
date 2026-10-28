@@ -33,19 +33,20 @@ use mio::Interest;
 /// # Examples
 ///
 /// ```no_run
-/// use tokio::net::TcpStream;
-/// use tokio::io::AsyncWriteExt;
+/// use arc_discharge::net::TcpStream;
+/// use futures_util::io::AsyncWriteExt;
 /// use std::error::Error;
 ///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn Error>> {
-///     // Connect to a peer
-///     let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+/// fn main() -> Result<(), Box<dyn Error>> {
+///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+///         // Connect to a peer
+///         let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
 ///
-///     // Write some data.
-///     stream.write_all(b"hello world!").await?;
+///         // Write some data.
+///         stream.write_all(b"hello world!").await?;
 ///
-///     Ok(())
+///         Ok(())
+///     })
 /// }
 /// ```
 ///
@@ -83,19 +84,20 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
-    /// use tokio::io::AsyncWriteExt;
+    /// use arc_discharge::net::TcpStream;
+    /// use futures_util::io::AsyncWriteExt;
     /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     // Write some data.
-    ///     stream.write_all(b"hello world!").await?;
+    ///         // Write some data.
+    ///         stream.write_all(b"hello world!").await?;
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     ///
@@ -170,14 +172,15 @@ impl TcpStream {
     ///
     /// ```rust,no_run
     /// use std::error::Error;
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let std_stream = std::net::TcpStream::connect("127.0.0.1:34254")?;
-    ///     std_stream.set_nonblocking(true)?;
-    ///     let stream = TcpStream::from_std(std_stream)?;
-    ///     Ok(())
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let std_stream = std::net::TcpStream::connect("127.0.0.1:34254")?;
+    ///         std_stream.set_nonblocking(true)?;
+    ///         let stream = TcpStream::from_std(std_stream)?;
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     ///
@@ -201,7 +204,7 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     ///
     /// # async fn dox() -> Result<(), Box<dyn std::error::Error>> {
     /// let stream = TcpStream::connect("127.0.0.1:8080").await?;
@@ -224,7 +227,7 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     ///
     /// # async fn dox() -> Result<(), Box<dyn std::error::Error>> {
     /// let stream = TcpStream::connect("127.0.0.1:8080").await?;
@@ -261,22 +264,20 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::io::{self, BorrowedCursor};
-    /// use tokio::net::TcpStream;
+    /// use std::{future::poll_fn, io};
+    /// use arc_discharge::net::TcpStream;
     ///
-    /// use futures::future::poll_fn;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let stream = TcpStream::connect("127.0.0.1:8000").await?;
+    ///         let mut buf = [0; 10];
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     let stream = TcpStream::connect("127.0.0.1:8000").await?;
-    ///     let mut buf = [0; 10];
-    ///     let mut buf = BorrowedCursor::new(&mut buf);
+    ///         poll_fn(|cx| {
+    ///             stream.poll_peek(cx, &mut buf)
+    ///         }).await?;
     ///
-    ///     poll_fn(|cx| {
-    ///         stream.poll_peek(cx, &mut buf)
-    ///     }).await?;
-    ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn poll_peek(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
@@ -355,40 +356,41 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     /// use std::error::Error;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be readable
-    ///         stream.readable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be readable
+    ///             std::future::poll_fn(|cx| stream.poll_read_ready(cx)).await?;
     ///
-    ///         // Creating the buffer **after** the `await` prevents it from
-    ///         // being stored in the async task.
-    ///         let mut buf = [0; 4096];
+    ///             // Creating the buffer **after** the `await` prevents it from
+    ///             // being stored in the async task.
+    ///             let mut buf = [0; 4096];
     ///
-    ///         // Try to read data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match stream.try_read(&mut buf) {
-    ///             Ok(0) => break,
-    ///             Ok(n) => {
-    ///                 println!("read {} bytes", n);
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e.into());
+    ///             // Try to read data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match stream.try_read(&mut buf) {
+    ///                 Ok(0) => break,
+    ///                 Ok(n) => {
+    ///                     println!("read {} bytes", n);
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e.into());
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -428,45 +430,46 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     /// use std::error::Error;
     /// use std::io::{self, IoSliceMut};
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be readable
-    ///         stream.readable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be readable
+    ///             std::future::poll_fn(|cx| stream.poll_read_ready(cx)).await?;
     ///
-    ///         // Creating the buffer **after** the `await` prevents it from
-    ///         // being stored in the async task.
-    ///         let mut buf_a = [0; 512];
-    ///         let mut buf_b = [0; 1024];
-    ///         let mut bufs = [
-    ///             IoSliceMut::new(&mut buf_a),
-    ///             IoSliceMut::new(&mut buf_b),
-    ///         ];
+    ///             // Creating the buffer **after** the `await` prevents it from
+    ///             // being stored in the async task.
+    ///             let mut buf_a = [0; 512];
+    ///             let mut buf_b = [0; 1024];
+    ///             let mut bufs = [
+    ///                 IoSliceMut::new(&mut buf_a),
+    ///                 IoSliceMut::new(&mut buf_b),
+    ///             ];
     ///
-    ///         // Try to read data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match stream.try_read_vectored(&mut bufs) {
-    ///             Ok(0) => break,
-    ///             Ok(n) => {
-    ///                 println!("read {} bytes", n);
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e.into());
+    ///             // Try to read data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match stream.try_read_vectored(&mut bufs) {
+    ///                 Ok(0) => break,
+    ///                 Ok(n) => {
+    ///                     println!("read {} bytes", n);
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e.into());
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_read_vectored(&self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
@@ -527,35 +530,36 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     /// use std::error::Error;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be writable
-    ///         stream.writable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be writable
+    ///             std::future::poll_fn(|cx| stream.poll_write_ready(cx)).await?;
     ///
-    ///         // Try to write data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match stream.try_write(b"hello world") {
-    ///             Ok(n) => {
-    ///                 break;
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e.into());
+    ///             // Try to write data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match stream.try_write(b"hello world") {
+    ///                 Ok(n) => {
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e.into());
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_write(&self, buf: &[u8]) -> io::Result<usize> {
@@ -587,37 +591,38 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
+    /// use arc_discharge::net::TcpStream;
     /// use std::error::Error;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     let bufs = [io::IoSlice::new(b"hello "), io::IoSlice::new(b"world")];
+    ///         let bufs = [io::IoSlice::new(b"hello "), io::IoSlice::new(b"world")];
     ///
-    ///     loop {
-    ///         // Wait for the socket to be writable
-    ///         stream.writable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be writable
+    ///             std::future::poll_fn(|cx| stream.poll_write_ready(cx)).await?;
     ///
-    ///         // Try to write data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match stream.try_write_vectored(&bufs) {
-    ///             Ok(n) => {
-    ///                 break;
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e.into());
+    ///             // Try to write data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match stream.try_write_vectored(&bufs) {
+    ///                 Ok(n) => {
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e.into());
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_write_vectored(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
@@ -680,26 +685,27 @@ impl TcpStream {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::TcpStream;
-    /// use tokio::io::AsyncReadExt;
+    /// use arc_discharge::net::TcpStream;
+    /// use futures_util::io::AsyncReadExt;
     /// use std::error::Error;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Connect to a peer
-    ///     let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
     ///
-    ///     let mut b1 = [0; 10];
-    ///     let mut b2 = [0; 10];
+    ///         let mut b1 = [0; 10];
+    ///         let mut b2 = [0; 10];
     ///
-    ///     // Peek at the data
-    ///     let n = stream.peek(&mut b1).await?;
+    ///         // Peek at the data
+    ///         let n = stream.peek(&mut b1).await?;
     ///
-    ///     // Read the data
-    ///     assert_eq!(n, stream.read(&mut b2[..n]).await?);
-    ///     assert_eq!(&b1[..n], &b2[..n]);
+    ///         // Read the data
+    ///         assert_eq!(n, stream.read(&mut b2[..n]).await?);
+    ///         assert_eq!(&b1[..n], &b2[..n]);
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     ///

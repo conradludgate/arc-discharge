@@ -41,20 +41,21 @@ use mio::Interest;
 ///
 /// Using `bind` we can create a simple echo server that sends and recv's with many different clients:
 /// ```no_run
-/// use tokio::net::UdpSocket;
+/// use arc_discharge::net::UdpSocket;
 /// use std::io;
 ///
-/// #[tokio::main]
-/// async fn main() -> io::Result<()> {
-///     let sock = UdpSocket::bind("0.0.0.0:8080").await?;
-///     let mut buf = [0; 1024];
-///     loop {
-///         let (len, addr) = sock.recv_from(&mut buf).await?;
-///         println!("{:?} bytes received from {:?}", len, addr);
+/// fn main() -> io::Result<()> {
+///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+///         let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+///         let mut buf = [0; 1024];
+///         loop {
+///             let (len, addr) = sock.recv_from(&mut buf).await?;
+///             println!("{:?} bytes received from {:?}", len, addr);
 ///
-///         let len = sock.send_to(&buf[..len], addr).await?;
-///         println!("{:?} bytes sent", len);
-///     }
+///             let len = sock.send_to(&buf[..len], addr).await?;
+///             println!("{:?} bytes sent", len);
+///         }
+///     })
 /// }
 /// ```
 ///
@@ -62,23 +63,24 @@ use mio::Interest;
 ///
 /// Or using `connect` we can echo with a single remote address using `send` and `recv`:
 /// ```no_run
-/// use tokio::net::UdpSocket;
+/// use arc_discharge::net::UdpSocket;
 /// use std::io;
 ///
-/// #[tokio::main]
-/// async fn main() -> io::Result<()> {
-///     let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+/// fn main() -> io::Result<()> {
+///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+///         let sock = UdpSocket::bind("0.0.0.0:8080").await?;
 ///
-///     let remote_addr = "127.0.0.1:59611";
-///     sock.connect(remote_addr).await?;
-///     let mut buf = [0; 1024];
-///     loop {
-///         let len = sock.recv(&mut buf).await?;
-///         println!("{:?} bytes received from {:?}", len, remote_addr);
+///         let remote_addr = "127.0.0.1:59611";
+///         sock.connect(remote_addr).await?;
+///         let mut buf = [0; 1024];
+///         loop {
+///             let len = sock.recv(&mut buf).await?;
+///             println!("{:?} bytes received from {:?}", len, remote_addr);
 ///
-///         let len = sock.send(&buf[..len]).await?;
-///         println!("{:?} bytes sent", len);
-///     }
+///             let len = sock.send(&buf[..len]).await?;
+///             println!("{:?} bytes sent", len);
+///         }
+///     })
 /// }
 /// ```
 ///
@@ -86,33 +88,30 @@ use mio::Interest;
 ///
 /// Because `send_to` and `recv_from` take `&self`. It's perfectly alright
 /// to use an `Arc<UdpSocket>` and share the references to multiple tasks.
-/// Here is a similar "echo" example that supports concurrent
-/// sending/receiving:
+/// This example sends and receives concurrently using the shared socket:
 ///
 /// ```no_run
-/// use tokio::{net::UdpSocket, sync::mpsc};
-/// use std::{io, net::SocketAddr, sync::Arc};
+/// use arc_discharge::net::UdpSocket;
+/// use std::{io, sync::Arc};
 ///
-/// #[tokio::main]
-/// async fn main() -> io::Result<()> {
-///     let sock = UdpSocket::bind("0.0.0.0:8080".parse::<SocketAddr>().unwrap()).await?;
-///     let r = Arc::new(sock);
-///     let s = r.clone();
-///     let (tx, mut rx) = mpsc::channel::<(Vec<u8>, SocketAddr)>(1_000);
+/// fn main() -> io::Result<()> {
+///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+///         let sock = UdpSocket::bind("127.0.0.1:0").await?;
+///         let addr = sock.local_addr()?;
+///         let r = Arc::new(sock);
+///         let s = r.clone();
 ///
-///     tokio::spawn(async move {
-///         while let Some((bytes, addr)) = rx.recv().await {
-///             let len = s.send_to(&bytes, &addr).await.unwrap();
-///             println!("{:?} bytes sent", len);
-///         }
-///     });
+///         let sender = arc_discharge::spawn(async move {
+///             s.send_to(b"hello", addr).await
+///         });
 ///
-///     let mut buf = [0; 1024];
-///     loop {
-///         let (len, addr) = r.recv_from(&mut buf).await?;
-///         println!("{:?} bytes received from {:?}", len, addr);
-///         tx.send((buf[..len].to_vec(), addr)).await.unwrap();
-///     }
+///         let mut buf = [0; 1024];
+///         let (len, peer) = r.recv_from(&mut buf).await?;
+///         assert_eq!(&buf[..len], b"hello");
+///         assert_eq!(peer, addr);
+///         sender.await.unwrap()?;
+///         Ok(())
+///     })
 /// }
 /// ```
 ///
@@ -131,15 +130,16 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     let sock = UdpSocket::bind("0.0.0.0:8080").await?;
-    ///     // use `sock`
-    /// #   let _ = sock;
-    ///     Ok(())
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+    ///         // use `sock`
+    /// #       let _ = sock;
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
@@ -201,17 +201,18 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// # use std::{io, net::SocketAddr};
     ///
-    /// # #[tokio::main]
-    /// # async fn main() -> io::Result<()> {
-    /// let addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
-    /// let std_sock = std::net::UdpSocket::bind(addr)?;
-    /// std_sock.set_nonblocking(true)?;
-    /// let sock = UdpSocket::from_std(std_sock)?;
-    /// // use `sock`
-    /// # Ok(())
+    /// # fn main() -> io::Result<()> {
+    /// #     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///     let addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
+    ///     let std_sock = std::net::UdpSocket::bind(addr)?;
+    ///     std_sock.set_nonblocking(true)?;
+    ///     let sock = UdpSocket::from_std(std_sock)?;
+    ///     // use `sock`
+    /// #     Ok(())
+    /// #     })
     /// # }
     /// ```
     #[track_caller]
@@ -271,16 +272,17 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// # use std::{io, net::SocketAddr};
     ///
-    /// # #[tokio::main]
-    /// # async fn main() -> io::Result<()> {
-    /// let addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
-    /// let sock = UdpSocket::bind(addr).await?;
-    /// // the address the socket is bound to
-    /// let local_addr = sock.local_addr()?;
-    /// # Ok(())
+    /// # fn main() -> io::Result<()> {
+    /// #     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///     let addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
+    ///     let sock = UdpSocket::bind(addr).await?;
+    ///     // the address the socket is bound to
+    ///     let local_addr = sock.local_addr()?;
+    /// #     Ok(())
+    /// #     })
     /// # }
     /// ```
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -292,17 +294,18 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     ///
     /// # use std::{io, net::SocketAddr};
-    /// # #[tokio::main]
-    /// # async fn main() -> io::Result<()> {
-    /// let addr = "0.0.0.0:8080".parse::<SocketAddr>().unwrap();
-    /// let peer = "127.0.0.1:11100".parse::<SocketAddr>().unwrap();
-    /// let sock = UdpSocket::bind(addr).await?;
-    /// sock.connect(peer).await?;
-    /// assert_eq!(peer, sock.peer_addr()?);
-    /// #    Ok(())
+    /// # fn main() -> io::Result<()> {
+    /// #     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///     let addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+    ///     let peer = "127.0.0.1:11100".parse::<SocketAddr>().unwrap();
+    ///     let sock = UdpSocket::bind(addr).await?;
+    ///     sock.connect(peer).await?;
+    ///     assert_eq!(peer, sock.peer_addr()?);
+    /// #        Ok(())
+    /// #     })
     /// # }
     /// ```
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
@@ -316,21 +319,22 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// # use std::{io, net::SocketAddr};
     ///
-    /// # #[tokio::main]
-    /// # async fn main() -> io::Result<()> {
-    /// let sock = UdpSocket::bind("0.0.0.0:8080".parse::<SocketAddr>().unwrap()).await?;
+    /// # fn main() -> io::Result<()> {
+    /// #     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///     let sock = UdpSocket::bind("0.0.0.0:8080".parse::<SocketAddr>().unwrap()).await?;
     ///
-    /// let remote_addr = "127.0.0.1:59600".parse::<SocketAddr>().unwrap();
-    /// sock.connect(remote_addr).await?;
-    /// let mut buf = [0u8; 32];
-    /// // recv from remote_addr
-    /// let len = sock.recv(&mut buf).await?;
-    /// // send to remote_addr
-    /// let _len = sock.send(&buf[..len]).await?;
-    /// # Ok(())
+    ///     let remote_addr = "127.0.0.1:59600".parse::<SocketAddr>().unwrap();
+    ///     sock.connect(remote_addr).await?;
+    ///     let mut buf = [0u8; 32];
+    ///     // recv from remote_addr
+    ///     let len = sock.recv(&mut buf).await?;
+    ///     // send to remote_addr
+    ///     let _len = sock.send(&buf[..len]).await?;
+    /// #     Ok(())
+    /// #     })
     /// # }
     /// ```
     pub async fn connect<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
@@ -407,19 +411,20 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::io;
-    /// use tokio::net::UdpSocket;
+    /// use std::io;
+    /// use arc_discharge::net::UdpSocket;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     // Bind socket
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
-    ///     socket.connect("127.0.0.1:8081").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Bind socket
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    ///         socket.connect("127.0.0.1:8081").await?;
     ///
-    ///     // Send a message
-    ///     socket.send(b"hello world").await?;
+    ///         // Send a message
+    ///         socket.send(b"hello world").await?;
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
@@ -473,37 +478,38 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     // Bind a UDP socket
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Bind a UDP socket
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     ///
-    ///     // Connect to a peer
-    ///     socket.connect("127.0.0.1:8081").await?;
+    ///         // Connect to a peer
+    ///         socket.connect("127.0.0.1:8081").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be writable
-    ///         socket.writable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be writable
+    ///             std::future::poll_fn(|cx| socket.poll_send_ready(cx)).await?;
     ///
-    ///         // Try to send data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match socket.try_send(b"hello world") {
-    ///             Ok(n) => {
-    ///                 break;
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e);
+    ///             // Try to send data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match socket.try_send(b"hello world") {
+    ///                 Ok(n) => {
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e);
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
@@ -565,21 +571,22 @@ impl UdpSocket {
     /// [`connect`]: method@Self::connect
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     // Bind socket
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
-    ///     socket.connect("127.0.0.1:8081").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Bind socket
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    ///         socket.connect("127.0.0.1:8081").await?;
     ///
-    ///     let mut buf = vec![0; 10];
-    ///     let n = socket.recv(&mut buf).await?;
+    ///         let mut buf = vec![0; 10];
+    ///         let n = socket.recv(&mut buf).await?;
     ///
-    ///     println!("received {} bytes {:?}", n, &buf[..n]);
+    ///         println!("received {} bytes {:?}", n, &buf[..n]);
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -632,40 +639,41 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     // Connect to a peer
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
-    ///     socket.connect("127.0.0.1:8081").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    ///         socket.connect("127.0.0.1:8081").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be readable
-    ///         socket.readable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be readable
+    ///             std::future::poll_fn(|cx| socket.poll_recv_ready(cx)).await?;
     ///
-    ///         // The buffer is **not** included in the async task and will
-    ///         // only exist on the stack.
-    ///         let mut buf = [0; 1024];
+    ///             // The buffer is **not** included in the async task and will
+    ///             // only exist on the stack.
+    ///             let mut buf = [0; 1024];
     ///
-    ///         // Try to recv data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match socket.try_recv(&mut buf) {
-    ///             Ok(n) => {
-    ///                 println!("GOT {:?}", &buf[..n]);
-    ///                 break;
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e);
+    ///             // Try to recv data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match socket.try_recv(&mut buf) {
+    ///                 Ok(n) => {
+    ///                     println!("GOT {:?}", &buf[..n]);
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e);
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -697,17 +705,18 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
-    ///     let len = socket.send_to(b"hello world", "127.0.0.1:8081").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    ///         let len = socket.send_to(b"hello world", "127.0.0.1:8081").await?;
     ///
-    ///     println!("Sent {} bytes", len);
+    ///         println!("Sent {} bytes", len);
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], target: A) -> io::Result<usize> {
@@ -768,33 +777,34 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::error::Error;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn Error>> {
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     ///
-    ///     let dst = "127.0.0.1:8081".parse()?;
+    ///         let dst = "127.0.0.1:8081".parse()?;
     ///
-    ///     loop {
-    ///         socket.writable().await?;
+    ///         loop {
+    ///             std::future::poll_fn(|cx| socket.poll_send_ready(cx)).await?;
     ///
-    ///         match socket.try_send_to(&b"hello world"[..], dst) {
-    ///             Ok(sent) => {
-    ///                 println!("sent {} bytes", sent);
-    ///                 break;
+    ///             match socket.try_send_to(&b"hello world"[..], dst) {
+    ///                 Ok(sent) => {
+    ///                     println!("sent {} bytes", sent);
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     // Writable false positive.
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => return Err(e.into()),
     ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 // Writable false positive.
-    ///                 continue;
-    ///             }
-    ///             Err(e) => return Err(e.into()),
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
@@ -827,19 +837,20 @@ impl UdpSocket {
     /// # Example
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     ///
-    ///     let mut buf = vec![0u8; 32];
-    ///     let (len, addr) = socket.recv_from(&mut buf).await?;
+    ///         let mut buf = vec![0u8; 32];
+    ///         let (len, addr) = socket.recv_from(&mut buf).await?;
     ///
-    ///     println!("received {:?} bytes from {:?}", len, addr);
+    ///         println!("received {:?} bytes from {:?}", len, addr);
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -889,39 +900,40 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     // Connect to a peer
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         // Connect to a peer
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     ///
-    ///     loop {
-    ///         // Wait for the socket to be readable
-    ///         socket.readable().await?;
+    ///         loop {
+    ///             // Wait for the socket to be readable
+    ///             std::future::poll_fn(|cx| socket.poll_recv_ready(cx)).await?;
     ///
-    ///         // The buffer is **not** included in the async task and will
-    ///         // only exist on the stack.
-    ///         let mut buf = [0; 1024];
+    ///             // The buffer is **not** included in the async task and will
+    ///             // only exist on the stack.
+    ///             let mut buf = [0; 1024];
     ///
-    ///         // Try to recv data, this may still fail with `WouldBlock`
-    ///         // if the readiness event is a false positive.
-    ///         match socket.try_recv_from(&mut buf) {
-    ///             Ok((n, _addr)) => {
-    ///                 println!("GOT {:?}", &buf[..n]);
-    ///                 break;
-    ///             }
-    ///             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-    ///                 continue;
-    ///             }
-    ///             Err(e) => {
-    ///                 return Err(e);
+    ///             // Try to recv data, this may still fail with `WouldBlock`
+    ///             // if the readiness event is a false positive.
+    ///             match socket.try_recv_from(&mut buf) {
+    ///                 Ok((n, _addr)) => {
+    ///                     println!("GOT {:?}", &buf[..n]);
+    ///                     break;
+    ///                 }
+    ///                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///                     continue;
+    ///                 }
+    ///                 Err(e) => {
+    ///                     return Err(e);
+    ///                 }
     ///             }
     ///         }
-    ///     }
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -987,19 +999,20 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// use tokio::net::UdpSocket;
+    /// use arc_discharge::net::UdpSocket;
     /// use std::io;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> io::Result<()> {
-    ///     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    /// fn main() -> io::Result<()> {
+    ///     arc_discharge::MTRuntime::thread_per_core().block_on(async {
+    ///         let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     ///
-    ///     let mut buf = vec![0u8; 32];
-    ///     let (len, addr) = socket.peek_from(&mut buf).await?;
+    ///         let mut buf = vec![0u8; 32];
+    ///         let (len, addr) = socket.peek_from(&mut buf).await?;
     ///
-    ///     println!("peeked {:?} bytes from {:?}", len, addr);
+    ///         println!("peeked {:?} bytes from {:?}", len, addr);
     ///
-    ///     Ok(())
+    ///         Ok(())
+    ///     })
     /// }
     /// ```
     pub async fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {

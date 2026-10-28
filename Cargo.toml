@@ -24,4 +24,4 @@ serde_json = "1.0"
 httparse = "1.0"
 httpdate = "1.0"
 tokio-util = { version = "0.7.0", features = ["full"] }
-futures-util = { version = "0.3.26", features = ["sink"] }
+futures-util = { version = "0.3.26", features = ["sink", "io"] }
