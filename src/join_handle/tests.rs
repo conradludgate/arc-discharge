@@ -17,7 +17,9 @@ struct CompleteOnRegister {
     abort: bool,
 }
 
-impl DynTask for CompleteOnRegister {
+// SAFETY: get_link never returns, and scheduling delegates to the real task.
+// This join-only adapter neither exposes nor moves the real task's future.
+unsafe impl DynTask for CompleteOnRegister {
     fn register(&self, waker: &std::task::Waker) {
         if self.abort {
             self.inner.clone().cancel();
@@ -67,7 +69,7 @@ where
         // worker paused so a second cleanup cannot mask the missed notification.
         // Dropping _resume_worker releases it on both success and panic.
     }
-    let (task, mut join) = JoinHandle::new(Task::new(runtime, future));
+    let (task, mut join) = JoinHandle::new(runtime, future);
     join.task = Arc::new(CompleteOnRegister { inner: task, abort });
     let mut join = std::pin::pin!(join);
 
@@ -111,7 +113,7 @@ fn cancellation_between_output_check_and_registration_is_not_lost() {
 #[test]
 fn completion_after_registration_wakes_the_joiner() {
     let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
-    let (task, mut join) = JoinHandle::new(Task::new(runtime, async { 42 }));
+    let (task, mut join) = JoinHandle::new(runtime, async { 42 });
     let (tx, rx) = mpsc::channel();
     let waker = std::task::Waker::from(Arc::new(Notify(tx)));
     let mut cx = Context::from_waker(&waker);

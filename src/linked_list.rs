@@ -1,17 +1,28 @@
+//! Type-erased task links over intrusive-collections.
+//!
+//! Each queued link owns one Arc strong reference, transferred by PointerOps.
+//! Task construction binds the inverse callback to its exact enclosing type;
+//! that callback recovers both allocation address and concrete dyn metadata.
+//! LinkOps delegates membership acquisition and release to AtomicLinkOps, so
+//! rejecting a duplicate must leave the existing owner's link intact.
+//!
+//! List membership is not the future's pinning guarantee: a dequeued task may
+//! still be pending. Task's private construction/access boundary keeps futures
+//! immovable through unlinking, polling and in-place completion/cancellation.
+
 use std::{
     marker::PhantomData,
     mem::offset_of,
-    ptr::{addr_of, addr_of_mut, NonNull},
+    ptr::{addr_of, NonNull},
     sync::Arc,
 };
 
-use futures_util::Future;
 use intrusive_collections::{
     linked_list::{AtomicLink, LinkedListOps},
     DefaultLinkOps, DefaultPointerOps,
 };
 
-use crate::task::{DynTask, Task};
+use crate::task::DynTask;
 
 pub(crate) struct FatLink<D: ?Sized> {
     link: AtomicLink,
@@ -19,7 +30,12 @@ pub(crate) struct FatLink<D: ?Sized> {
 }
 
 impl<D: ?Sized> FatLink<D> {
-    pub(crate) const fn new<L: FatLinked<D>>() -> Self {
+    /// Creates an unlinked link with the inverse projection for `L`.
+    ///
+    /// # Safety
+    /// This must be the link returned by `L::get_link` for its enclosing value.
+    /// Using another type's callback can reconstruct an invalid pointer/vtable.
+    pub(crate) const unsafe fn new<L: FatLinked<D>>() -> Self {
         FatLink {
             link: AtomicLink::new(),
             get_value: L::get_value,
@@ -33,13 +49,15 @@ impl<D: ?Sized> FatLink<D> {
     }
 
     #[inline]
-    fn to_link(ptr: NonNull<Self>) -> NonNull<AtomicLink> {
+    // ptr must identify a live FatLink, retaining provenance for its field.
+    unsafe fn to_link(ptr: NonNull<Self>) -> NonNull<AtomicLink> {
         let offset = offset_of!(FatLink::<D>, link);
         unsafe { NonNull::new_unchecked(ptr.as_ptr().byte_add(offset).cast()) }
     }
 
     #[inline]
-    fn from_link(link: NonNull<AtomicLink>) -> NonNull<Self> {
+    // link must be the AtomicLink field of a live FatLink of this same type.
+    unsafe fn from_link(link: NonNull<AtomicLink>) -> NonNull<Self> {
         let offset = offset_of!(FatLink::<D>, link);
         unsafe { NonNull::new_unchecked(link.as_ptr().byte_sub(offset).cast()) }
     }
@@ -72,6 +90,8 @@ impl<D: ?Sized> Default for FatLinkOps<D> {
     }
 }
 
+// SAFETY: Both projections refer to the same embedded AtomicLink. Membership
+// acquisition/release and synchronization are delegated without changing them.
 unsafe impl<D: ?Sized> intrusive_collections::LinkOps for FatLinkOps<D> {
     type LinkPtr = NonNull<FatLink<D>>;
 
@@ -86,34 +106,52 @@ unsafe impl<D: ?Sized> intrusive_collections::LinkOps for FatLinkOps<D> {
     }
 }
 
+// SAFETY: Every list pointer is converted through the same inverse projections;
+// the underlying AtomicLinkOps owns the next/prev and membership invariants.
 unsafe impl<D: ?Sized> LinkedListOps for FatLinkOps<D> {
     #[inline]
     unsafe fn next(&self, ptr: Self::LinkPtr) -> Option<Self::LinkPtr> {
-        self.ops.next(FatLink::to_link(ptr)).map(FatLink::from_link)
+        self.ops
+            .next(FatLink::to_link(ptr))
+            .map(|link| FatLink::from_link(link))
     }
 
     #[inline]
     unsafe fn prev(&self, ptr: Self::LinkPtr) -> Option<Self::LinkPtr> {
-        self.ops.prev(FatLink::to_link(ptr)).map(FatLink::from_link)
+        self.ops
+            .prev(FatLink::to_link(ptr))
+            .map(|link| FatLink::from_link(link))
     }
 
     unsafe fn set_next(&mut self, ptr: Self::LinkPtr, next: Option<Self::LinkPtr>) {
-        self.ops
-            .set_next(FatLink::to_link(ptr), next.map(FatLink::to_link))
+        self.ops.set_next(
+            FatLink::to_link(ptr),
+            next.map(|link| FatLink::to_link(link)),
+        )
     }
 
     unsafe fn set_prev(&mut self, ptr: Self::LinkPtr, prev: Option<Self::LinkPtr>) {
-        self.ops
-            .set_prev(FatLink::to_link(ptr), prev.map(FatLink::to_link))
+        self.ops.set_prev(
+            FatLink::to_link(ptr),
+            prev.map(|link| FatLink::to_link(link)),
+        )
     }
 }
 
-pub(crate) trait FatLinked<D: ?Sized> {
+/// Inverse raw projections between a concrete allocation and its intrusive link.
+///
+/// # Safety
+/// The projections must round-trip the same live allocation, with metadata for
+/// its actual concrete type. The link and callback must remain valid and at the
+/// same address while linked. Neither projection may move or release the owner.
+pub(crate) unsafe trait FatLinked<D: ?Sized> {
+    /// # Safety
+    /// `self` must point to a live `Self` value.
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<D>>;
+    /// # Safety
+    /// `ptr` must be the link obtained from a live `Self` via `get_link`.
     unsafe fn get_value(ptr: NonNull<FatLink<D>>) -> *const D;
 }
-
-/// TODO: move the above to a separate crate, make the below a safe macro
 
 #[allow(explicit_outlives_requirements)]
 #[derive(Clone, Copy)]
@@ -140,12 +178,15 @@ impl TaskAdapter {
     }
 }
 
+// SAFETY: DynTask requires a valid inverse callback for each returned link.
+// DefaultPointerOps transfers one Arc strong reference into the collection and
+// reconstructs it on removal/drop. No new reference count is invented here.
 unsafe impl intrusive_collections::Adapter for TaskAdapter {
     type LinkOps = FatLinkOps<dyn DynTask>;
     type PointerOps = DefaultPointerOps<Arc<dyn DynTask>>;
     #[inline]
     unsafe fn get_value(&self, link: NonNull<FatLink<dyn DynTask>>) -> *const dyn DynTask {
-        let get_value = *addr_of_mut!((*link.as_ptr()).get_value);
+        let get_value = *addr_of!((*link.as_ptr()).get_value);
         get_value(link)
     }
 
@@ -168,56 +209,5 @@ unsafe impl intrusive_collections::Adapter for TaskAdapter {
     }
 }
 
-impl<F: Future + Send + 'static> FatLinked<dyn DynTask> for Task<F>
-where
-    F::Output: Send + 'static,
-{
-    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>> {
-        NonNull::new_unchecked(addr_of!((*self).link).cast_mut())
-    }
-
-    unsafe fn get_value(ptr: NonNull<FatLink<dyn DynTask>>) -> *const dyn DynTask {
-        let offset = offset_of!(Task::<F>, link);
-        ptr.as_ptr().byte_sub(offset).cast::<Task<F>>().cast_const() as _
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use std::{num::NonZeroUsize, sync::Arc, task::Poll};
-
-    use intrusive_collections::LinkedList;
-
-    use crate::{
-        task::{DynTask, Task},
-        JoinError, MTRuntime,
-    };
-
-    use super::TaskAdapter;
-
-    impl dyn DynTask {
-        fn check<T: PartialEq + 'static>(self: Arc<Self>, t: T) {
-            self.clone().run();
-            let mut output = Poll::<Result<T, JoinError>>::Pending;
-            self.take_output(&mut output);
-            assert!(matches!(output, Poll::Ready(Ok(u)) if t == u))
-        }
-    }
-
-    #[test]
-    fn list() {
-        let handle = MTRuntime::new(NonZeroUsize::new(1).unwrap());
-        let mut list = LinkedList::new(TaskAdapter::new());
-        list.push_back(Arc::new(Task::new(handle.clone(), async { 1 })) as Arc<_>);
-        list.push_back(Arc::new(Task::new(handle.clone(), async { 2 })) as Arc<_>);
-        list.push_back(Arc::new(Task::new(handle.clone(), async { 3 })) as Arc<_>);
-        list.push_back(
-            Arc::new(Task::new(handle.clone(), async { String::from("four") })) as Arc<_>,
-        );
-
-        list.pop_front().unwrap().check(1);
-        list.pop_front().unwrap().check(2);
-        list.pop_front().unwrap().check(3);
-        list.pop_front().unwrap().check(String::from("four"));
-    }
-}
+mod tests;

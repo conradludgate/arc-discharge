@@ -157,8 +157,7 @@ fn cancellation_during_a_notified_poll_wakes_the_joiner() {
 #[test]
 fn cancellation_before_polling_wakes_the_joiner() {
     let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
-    let (_task, mut join) =
-        crate::JoinHandle::new(Task::new(runtime, std::future::pending::<()>()));
+    let (_task, mut join) = crate::JoinHandle::new(runtime, std::future::pending::<()>());
     let (tx, rx) = mpsc::channel();
     let waker = Waker::from(Arc::new(Notify(tx)));
     let mut cx = Context::from_waker(&waker);

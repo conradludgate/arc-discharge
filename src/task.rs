@@ -1,6 +1,7 @@
 use std::{
+    mem::offset_of,
     pin::Pin,
-    ptr::NonNull,
+    ptr::{addr_of, NonNull},
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc,
@@ -25,23 +26,29 @@ const CANCELLED: u8 = 3;
 // A notification was consumed by another worker during the current poll.
 const NOTIFIED: u8 = 4;
 
-/// our Task type that stores the intrusive pointers and our futures
+/// An allocated task never moves after its first poll. Only `allocate` creates
+/// tasks outside this module, and returns an erased Arc with no downcast/mutable
+/// access. Keep fields private: completion/cancellation drop the future in place.
 pub(crate) struct Task<F: Future> {
     /// intrusive pointers
-    pub(crate) link: FatLink<dyn DynTask>,
+    link: FatLink<dyn DynTask>,
 
     /// pointer to the runtime handle
-    pub(crate) handle: Arc<MTRuntime>,
+    handle: Arc<MTRuntime>,
 
     /// who should be notified of this task completing
-    pub(crate) state: AtomicU8,
-    pub(crate) waker: AtomicWaker,
+    state: AtomicU8,
+    waker: AtomicWaker,
 
     /// the future for this task
-    pub(crate) fut: Mutex<JoinInner<F>>,
+    fut: Mutex<JoinInner<F>>,
 }
 
-pub(crate) trait DynTask: Send + Sync + 'static {
+/// # Safety
+/// A returned link must belong to this object, remain at a stable address while
+/// linked, and carry a callback recovering this same object and concrete type.
+/// Scheduling/polling must preserve any pinning guarantees made to the future.
+pub(crate) unsafe trait DynTask: Send + Sync + 'static {
     fn schedule_global(self: Arc<Self>);
     fn run(self: Arc<Self>);
 
@@ -50,6 +57,8 @@ pub(crate) trait DynTask: Send + Sync + 'static {
 
     fn take_output(&self, output: &mut dyn std::any::Any);
 
+    /// # Safety
+    /// `self` must be a valid pointer to a live task.
     unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>>;
 }
 
@@ -110,7 +119,10 @@ where
     }
 }
 
-impl<F: Future + Send + 'static> DynTask for Task<F>
+// SAFETY: allocate binds the callback to Self and erases the owning Arc before
+// it escapes. Private fields prevent future extraction; the only replacements
+// of a polled future drop it in place under its mutex.
+unsafe impl<F: Future + Send + 'static> DynTask for Task<F>
 where
     F::Output: Send + 'static,
 {
@@ -161,8 +173,9 @@ where
                 // set without a poll owner to complete or requeue the task.
                 {
                     let mut fut = self.fut.lock();
-                    // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
-                    // is always pinned and never moved until the Arc deallocates.
+                    // SAFETY: allocate exposes only an erased Arc, so callers
+                    // cannot unwrap/move Task<F>. Private future access and
+                    // in-place replacement keep F pinned until it is dropped.
                     let ready = unsafe { Pin::new_unchecked(&mut *fut) }
                         .poll(&mut cx)
                         .is_ready();
@@ -208,14 +221,39 @@ impl<F: Future + Send + 'static> Task<F>
 where
     F::Output: Send + 'static,
 {
-    pub(crate) fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
+    /// Allocate and erase before exposing the task: a typed Arc could otherwise
+    /// be unwrapped and moved after polling a !Unpin future.
+    pub(crate) fn allocate(handle: Arc<MTRuntime>, fut: F) -> Arc<dyn DynTask> {
+        Arc::new(Self::new(handle, fut))
+    }
+
+    fn new(handle: Arc<MTRuntime>, fut: F) -> Self {
         Self {
-            link: FatLink::new::<Self>(),
+            // SAFETY: this is Self's link, projected by the impl below. No
+            // caller can substitute another concrete type's inverse callback.
+            link: unsafe { FatLink::new::<Self>() },
             fut: Mutex::new(JoinInner::new(fut)),
             handle,
             state: AtomicU8::new(0),
             waker: AtomicWaker::new(),
         }
+    }
+}
+
+// SAFETY: link is a direct private field initialized only with Self's callback.
+// Subtracting its offset recovers the original Task<F> allocation and coercing
+// that pointer supplies the matching Task<F> vtable, including size/drop glue.
+unsafe impl<F: Future + Send + 'static> FatLinked<dyn DynTask> for Task<F>
+where
+    F::Output: Send + 'static,
+{
+    unsafe fn get_link(self: *const Self) -> NonNull<FatLink<dyn DynTask>> {
+        NonNull::new_unchecked(addr_of!((*self).link).cast_mut())
+    }
+
+    unsafe fn get_value(ptr: NonNull<FatLink<dyn DynTask>>) -> *const dyn DynTask {
+        let offset = offset_of!(Self, link);
+        ptr.as_ptr().byte_sub(offset).cast::<Self>().cast_const() as _
     }
 }
 

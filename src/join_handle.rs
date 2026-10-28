@@ -7,7 +7,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::task::{DynTask, Task};
+use crate::{
+    task::{DynTask, Task},
+    MTRuntime,
+};
 
 pin_project_lite::pin_project!(
     #[project = JoinInnerProj]
@@ -86,9 +89,10 @@ where
     O: Send + 'static,
 {
     pub(crate) fn new(
-        task: Task<impl Future<Output = O> + Send + 'static>,
+        handle: Arc<MTRuntime>,
+        future: impl Future<Output = O> + Send + 'static,
     ) -> (Arc<dyn DynTask>, Self) {
-        let task: Arc<dyn DynTask> = Arc::new(task);
+        let task = Task::allocate(handle, future);
         let task2 = task.clone();
 
         let this = Self {
