@@ -34,3 +34,4 @@ jobs:
           toolchain: nightly-2026-10-24
           components: miri, rust-src
       - run: cargo miri test --lib linked_list::tests -- --test-threads=1
+      - run: cargo miri test --lib join_handle::tests::completion_wake -- --test-threads=1

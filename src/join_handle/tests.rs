@@ -1,6 +1,113 @@
 use super::*;
 use crate::{linked_list::FatLink, MTRuntime};
-use std::{num::NonZeroUsize, ptr::NonNull, sync::mpsc, task::Wake};
+use std::{
+    num::NonZeroUsize,
+    ptr::NonNull,
+    sync::{mpsc, Mutex, OnceLock},
+    task::{Wake, Waker},
+};
+
+// This waker synchronously waits for a real JoinHandle poll. Run that poll on a
+// helper thread so the pre-fix deadlock becomes a bounded failure, not a hung
+// test process. The helper is joined after Task::run has unwound/unlocked.
+struct PollDuringWake {
+    join: Mutex<JoinHandle<usize>>,
+    helper: Mutex<Option<std::thread::JoinHandle<()>>>,
+    result: Mutex<Option<Result<usize, JoinError>>>,
+}
+
+impl Wake for PollDuringWake {
+    fn wake(self: Arc<Self>) {
+        let (tx, rx) = mpsc::channel();
+        let poller = self.clone();
+        let helper = std::thread::spawn(move || {
+            let mut join = poller.join.lock().unwrap();
+            let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+            let result = Pin::new(&mut *join).poll(&mut cx);
+            let _ = tx.send(result);
+        });
+        *self.helper.lock().unwrap() = Some(helper);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("join polling blocked inside the completion wake callback");
+        match result {
+            Poll::Ready(result) => *self.result.lock().unwrap() = Some(result),
+            Poll::Pending => panic!("completion wake did not expose the join result"),
+        }
+    }
+}
+
+fn poll_during_completion_wake(
+    future: impl Future<Output = usize> + Send + 'static,
+    abort: bool,
+) -> Result<usize, JoinError> {
+    // Real runtime/I/O state, manually driven: no background worker can complete
+    // the task before this test has registered its waker.
+    let (driver, handle) = crate::io::IODriver::new();
+    let runtime = Arc::new(MTRuntime {
+        global_queue: Mutex::new(intrusive_collections::LinkedList::new(
+            crate::linked_list::TaskAdapter::new(),
+        )),
+        workers: OnceLock::from(Vec::new().into_boxed_slice()),
+        parked_workers: crate::sync_slot_map::SyncSlotMap::new(0),
+        io_handle: Arc::new(handle),
+        io_driver: Mutex::new(driver),
+    });
+    let (task, join) = JoinHandle::new(runtime.clone(), future);
+    let poller = Arc::new(PollDuringWake {
+        join: Mutex::new(join),
+        helper: Mutex::new(None),
+        result: Mutex::new(None),
+    });
+    let waker = Waker::from(poller.clone());
+    let mut cx = Context::from_waker(&waker);
+    assert!(Pin::new(&mut *poller.join.lock().unwrap())
+        .poll(&mut cx)
+        .is_pending());
+    let task = if abort {
+        task.cancel();
+        // Release the queue lock before running cancellation and its callback.
+        let task = runtime.global_queue.lock().unwrap().pop_front().unwrap();
+        task
+    } else {
+        task
+    };
+    let run = catch_unwind(AssertUnwindSafe(|| task.run()));
+    if let Some(helper) = poller.helper.lock().unwrap().take() {
+        helper.join().unwrap();
+    }
+    assert!(
+        run.is_ok(),
+        "completion wake could not poll the join handle"
+    );
+    let result = poller.result.lock().unwrap().take().unwrap();
+    result
+}
+
+#[test]
+fn completion_wake_can_poll_successful_join() {
+    assert_eq!(
+        poll_during_completion_wake(std::future::ready(42), false).unwrap(),
+        42
+    );
+}
+
+#[test]
+fn completion_wake_can_poll_panicked_join() {
+    let future = std::future::poll_fn(|_| -> Poll<usize> { panic!("expected task panic") });
+    assert!(matches!(
+        poll_during_completion_wake(future, false),
+        Err(JoinError::Panic(_))
+    ));
+}
+
+#[test]
+fn completion_wake_can_poll_cancelled_join() {
+    assert!(matches!(
+        poll_during_completion_wake(std::future::pending(), true),
+        Err(JoinError::Aborted)
+    ));
+}
 
 struct Notify(mpsc::Sender<()>);
 
