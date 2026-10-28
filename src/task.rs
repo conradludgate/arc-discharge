@@ -181,6 +181,9 @@ where
                         .is_ready();
                     if ready {
                         self.state.store(COMPLETED, Ordering::Release);
+                        // A wake callback may synchronously poll the join handle,
+                        // which needs this mutex to take the completed output.
+                        drop(fut);
                         self.waker.wake()
                     } else {
                         // Unlock before publishing IDLE: the next worker must
