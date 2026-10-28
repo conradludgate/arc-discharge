@@ -13,7 +13,7 @@ mio = { version = "0.8.6", features = ["os-poll", "net"] }
 sharded-slab = "0.1.4"
 pin-list = "0.1.0"
 arrayvec = "0.7.2"
-intrusive-collections = "0.9.6"
+intrusive-collections = "0.10.3"
 parking_lot = "0.12"
 
 [dev-dependencies]
