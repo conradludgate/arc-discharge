@@ -8,6 +8,29 @@ use std::{
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+#[test]
+fn output_check_contention_does_not_discard_a_poll() {
+    let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
+    for _ in 0..32 {
+        let task = Arc::new(Task::new(runtime.clone(), std::future::ready(7usize)));
+        // take_output also locks this mutex while the future is still pending.
+        // A worker can win IDLE -> RUNNING before that brief output check unlocks.
+        let output_check = task.fut.lock();
+        let running = task.clone();
+        let worker = std::thread::spawn(move || running.run());
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        while task.state.load(Ordering::Acquire) == IDLE {
+            assert!(std::time::Instant::now() < deadline, "worker did not start");
+            std::thread::yield_now();
+        }
+        drop(output_check);
+        worker.join().unwrap();
+        let mut result = Poll::<Result<usize, JoinError>>::Pending;
+        task.take_output(&mut result);
+        assert!(matches!(result, Poll::Ready(Ok(7))));
+    }
+}
+
 struct PausedPoll {
     entered: Option<mpsc::Sender<Waker>>,
     release: mpsc::Receiver<()>,
