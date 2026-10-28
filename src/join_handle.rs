@@ -114,7 +114,13 @@ impl<O: 'static> Future for JoinHandle<O> {
 
         if out.is_pending() {
             self.task.register(cx.waker());
+            // Completion may have published its result and woken before
+            // registration. Recheck before deciding that another poll is needed.
+            self.task.take_output(&mut out);
         }
         out
     }
 }
+
+#[cfg(test)]
+mod tests;
