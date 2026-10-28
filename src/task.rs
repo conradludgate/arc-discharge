@@ -155,8 +155,12 @@ where
                 _ => None,
             }) {
             Ok(IDLE) => {
-                // if it's locked, then it's already being polled or complete. we don't care
-                if let Some(mut fut) = self.fut.try_lock() {
+                // Winning IDLE -> RUNNING excludes another active poll, but a
+                // joiner may briefly hold the future mutex in take_output.
+                // Wait for it rather than discarding work and leaving RUNNING
+                // set without a poll owner to complete or requeue the task.
+                {
+                    let mut fut = self.fut.lock();
                     // SAFETY: We never call `Arc::into_inner`/`Arc::get_mut`. Because of this, the future
                     // is always pinned and never moved until the Arc deallocates.
                     let ready = unsafe { Pin::new_unchecked(&mut *fut) }
