@@ -1,7 +1,6 @@
 use super::*;
 use crate::{linked_list::FatLink, MTRuntime};
 use std::{
-    num::NonZeroUsize,
     ptr::NonNull,
     sync::{mpsc, Mutex, OnceLock},
     task::{Wake, Waker},
@@ -37,14 +36,11 @@ impl Wake for PollDuringWake {
     }
 }
 
-fn poll_during_completion_wake(
-    future: impl Future<Output = usize> + Send + 'static,
-    abort: bool,
-) -> Result<usize, JoinError> {
-    // Real runtime/I/O state, manually driven: no background worker can complete
-    // the task before this test has registered its waker.
+// Real runtime/I/O state, manually driven: these tests control exactly when
+// tasks complete and do not leave detached runtime workers running under Miri.
+fn manual_runtime() -> Arc<MTRuntime> {
     let (driver, handle) = crate::io::IODriver::new();
-    let runtime = Arc::new(MTRuntime {
+    Arc::new(MTRuntime {
         global_queue: Mutex::new(intrusive_collections::LinkedList::new(
             crate::linked_list::TaskAdapter::new(),
         )),
@@ -52,7 +48,14 @@ fn poll_during_completion_wake(
         parked_workers: crate::sync_slot_map::SyncSlotMap::new(0),
         io_handle: Arc::new(handle),
         io_driver: Mutex::new(driver),
-    });
+    })
+}
+
+fn poll_during_completion_wake(
+    future: impl Future<Output = usize> + Send + 'static,
+    abort: bool,
+) -> Result<usize, JoinError> {
+    let runtime = manual_runtime();
     let (task, join) = JoinHandle::new(runtime.clone(), future);
     let poller = Arc::new(PollDuringWake {
         join: Mutex::new(join),
@@ -161,22 +164,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send,
 {
-    let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
-    let (_resume_worker, resume) = mpsc::channel::<()>();
-    if abort {
-        let (entered, paused) = mpsc::channel();
-        let _blocker = runtime.spawn(async move {
-            entered.send(()).unwrap();
-            let _ = resume.recv();
-        });
-        paused
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        // cancel() queues cleanup as well as the direct run below. Keep the
-        // worker paused so a second cleanup cannot mask the missed notification.
-        // Dropping _resume_worker releases it on both success and panic.
-    }
-    let (task, mut join) = JoinHandle::new(runtime, future);
+    let runtime = manual_runtime();
+    let (task, mut join) = JoinHandle::new(runtime.clone(), future);
     join.task = Arc::new(CompleteOnRegister { inner: task, abort });
     let mut join = std::pin::pin!(join);
 
@@ -190,6 +179,14 @@ where
         rx.try_recv()
             .expect("completed join returned Pending without a notification");
         result = join.as_mut().poll(&mut cx);
+    }
+    // cancel() also queues a reference for cleanup. With no worker, consume it
+    // explicitly so a task -> runtime -> queue ownership cycle cannot remain.
+    loop {
+        let Some(task) = runtime.global_queue.lock().unwrap().pop_front() else {
+            break;
+        };
+        drop(task);
     }
     match result {
         Poll::Ready(result) => result,
@@ -219,7 +216,7 @@ fn cancellation_between_output_check_and_registration_is_not_lost() {
 
 #[test]
 fn completion_after_registration_wakes_the_joiner() {
-    let runtime = MTRuntime::new(NonZeroUsize::new(1).unwrap());
+    let runtime = manual_runtime();
     let (task, mut join) = JoinHandle::new(runtime, async { 42 });
     let (tx, rx) = mpsc::channel();
     let waker = std::task::Waker::from(Arc::new(Notify(tx)));
